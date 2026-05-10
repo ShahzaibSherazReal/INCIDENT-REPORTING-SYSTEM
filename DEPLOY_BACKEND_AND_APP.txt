@@ -1,0 +1,125 @@
+================================================================================
+  AIRS — Backend deploy + Phone par app (bina phone par backend chalaye)
+================================================================================
+Ye guide Roman Urdu / mix Urdu-English mein hai taake steps clear rahein.
+
+IMPORTANT IDEA
+--------------
+- Backend (Python FastAPI + OpenCV + YOLO) ko INTERNET par kisi SERVER par chalana hai
+  (Railway, Render, Fly.io, DigitalOcean droplet, VPS, etc.).
+- Phone sirf app/browser khole ga; wo HTTPS/HTTP se us deployed URL ko call kare ga.
+- Phone par Python/uvicorn manually ON karne ki zaroorat NAHI — sirf cloud par backend 24/7
+  (ya jab tak tum service band na karo) chalna chahiye.
+
+PART A — BACKEND CLOUD PAR DEPLOY (high level)
+-----------------------------------------------
+
+1) Tayar karo (GitHub repo clean ho, backend_python folder commit ho).
+
+2) Hosting choose karo — beginners ke liye:
+   - Railway.app   OR   Render.com   OR   Fly.io
+   Sab Python/Docker support kartay hain; tumhari app heavy hai (OpenCV, ultralytics),
+   is liye:
+   - Free tier par build slow / memory kam ho sakti hai; agar fail ho to paid small VM.
+
+3) Zaroori environment variables (hosting dashboard → Environment / Variables):
+
+   SUPABASE_URL              = tumhari Supabase project URL (https://....supabase.co)
+   SUPABASE_SERVICE_ROLE_KEY = Supabase dashboard → Settings → API → service_role key
+                              (ye SECRET hai — kabhi app/client code mein commit mat karo)
+
+   SUPABASE_SNAPSHOT_BUCKET  = optional; default usually "incident-snapshots"
+                              (migration ke mutabiq jo bucket name ho)
+
+   BACKEND_PUBLIC_URL       = PUBLIC HTTPS URL jahan tumhara API khule ga
+                              Example: https://airs-api.railway.app
+                              (trailing slash NA lagao)
+                              Ye snapshots / URLs generate karte waqt kaam aata hai.
+
+   Baqi optional .env cheezen (confidence, FPS, etc.) docs ya .env.example dekho.
+
+4) Start command (agar Docker na use kar rahe):
+
+   Working directory: backend_python folder (jahan main.py hai)
+
+   pip install -r requirements.txt
+   uvicorn main:app --host 0.0.0.0 --port $PORT
+
+   Note: Kai hosts PORT env var detay hain ($PORT ya 8000) — host ki docs dekho.
+
+5) HTTPS:
+   Production mein URL **https://** hona chahiye taake browsers secure mixed-content na roken.
+
+6) Deploy hone ke baad browser mein test karo:
+
+   https://TUMHARI-API-URL/docs     (FastAPI Swagger)
+   Agar yahan khul jaye to API live hai.
+
+PART B — FLUTTER APP KO US BACKEND SE JODO
+--------------------------------------------
+
+App already compile-time par BACKEND_URL leta hai (dart-define).
+
+1) Cloud backend ka BASE URL likho — scheme + host, path NAHI.
+
+   Sahi:   https://abcxyz.railway.app
+   Galat: https://abcxyz.railway.app/   (trailing slash avoid — code strip karti hai magar best)
+
+2) RELEASE APK (Android phone install):
+
+   Terminal / CMD — frontend_flutter folder mein:
+
+   cd path\to\INCIDENT REPORTING SYSTEM\frontend_flutter
+
+   flutter build apk --release --dart-define=BACKEND_URL=https://TUMHARI-API-URL
+
+   Output APK:
+
+   build\app\outputs\flutter-apk\app-release.apk
+
+   Is APK ko phone par install karo — ab wo DIRECT cloud backend ko call kare ga.
+
+3) WEB (agar Netlify / static host par Flutter web build):
+
+   flutter build web --release --dart-define=BACKEND_URL=https://TUMHARI-API-URL
+
+   build\web\ folder ko Netlify par publish karo.
+
+4) LOCAL DEV (sirf laptop):
+
+   Default BACKEND_URL http://localhost:8000 hai agar dart-define na do.
+
+   Ya explicitly:
+
+   flutter run -d chrome --dart-define=BACKEND_URL=http://localhost:8000
+
+PART C — PHONE PAR “BACKEND ON” NAHI — checklist
+-------------------------------------------------
+
+[ ] Cloud par backend deploy ho chuka + /docs open ho raha ho.
+
+[ ] Supabase keys BACKEND ke env mein sahi (anon key NAHI — service_role backend ke liye).
+
+[ ] APK build karte waqt --dart-define=BACKEND_URL=https://... DIYA ho
+    (purani APK mein purana localhost bake ho sakta hai — nayi build zaroori hai.)
+
+[ ] Phone ka internet ON ho (Wi‑Fi / mobile data).
+
+[ ] Agar tum sirf LAN IP (http://192.168.x.x) use kar rahe ho — ye sirf same Wi‑Fi test ke liye;
+    bahar se phone ko access ke liye HTTPS cloud URL MUST.
+
+PART D — SHORT QA
+-----------------
+
+Q: Netlify par backend?
+A: Ye FastAPI server Netlify ke typical model par fit NAHI; frontend web han, backend alag host.
+
+Q: CORS?
+A: Tumhare backend mein allow_origins broad hai; simple setup ke liye extra CORS step aksar NAHI.
+
+Q: Play Store?
+A: Alag baat — signing / privacy policy; ye guide sirf “deploy + BACKEND_URL” par hai.
+
+================================================================================
+  End of file — steps update karte waqt ye file edit kar sakte ho.
+================================================================================
