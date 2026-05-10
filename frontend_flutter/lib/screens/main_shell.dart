@@ -12,6 +12,7 @@ import 'live_operations_view.dart';
 import 'operator_review_view.dart';
 import 'photo_analyze_view.dart';
 import 'realtime_device_view.dart';
+import 'staff_console_view.dart';
 import 'video_analyze_view.dart';
 
 /// Root shell after auth: landing + section navigation (rail / bottom bar).
@@ -33,7 +34,7 @@ class _MainShellState extends State<MainShell> {
     context.read<IncidentProvider>().refresh(silentErrors: false);
   }
 
-  List<NavigationRailDestination> _railDestinations(bool showReview) {
+  List<NavigationRailDestination> _railDestinations(bool showReview, bool showStaff) {
     return [
       const NavigationRailDestination(
         icon: Icon(Icons.home_outlined),
@@ -71,10 +72,16 @@ class _MainShellState extends State<MainShell> {
           selectedIcon: Icon(Icons.fact_check_rounded),
           label: Text('Review'),
         ),
+      if (showStaff)
+        const NavigationRailDestination(
+          icon: Icon(Icons.manage_accounts_outlined),
+          selectedIcon: Icon(Icons.manage_accounts_rounded),
+          label: Text('Manage'),
+        ),
     ];
   }
 
-  List<NavigationDestination> _bottomDestinations(bool showReview) {
+  List<NavigationDestination> _bottomDestinations(bool showReview, bool showStaff) {
     return [
       const NavigationDestination(
         icon: Icon(Icons.home_outlined),
@@ -112,6 +119,12 @@ class _MainShellState extends State<MainShell> {
           selectedIcon: Icon(Icons.fact_check_rounded),
           label: 'Review',
         ),
+      if (showStaff)
+        const NavigationDestination(
+          icon: Icon(Icons.manage_accounts_outlined),
+          selectedIcon: Icon(Icons.manage_accounts_rounded),
+          label: 'Manage',
+        ),
     ];
   }
 
@@ -119,7 +132,9 @@ class _MainShellState extends State<MainShell> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
     final showReviewTab = auth.canReviewAlerts && !auth.isGuest;
-    final maxIndex = showReviewTab ? 6 : 5;
+    final showStaffPanel = auth.canUseStaffPanel;
+    final extraTabs = (showReviewTab ? 1 : 0) + (showStaffPanel ? 1 : 0);
+    final maxIndex = 5 + extraTabs;
 
     final navIndex = _index.clamp(0, maxIndex);
     if (navIndex != _index) {
@@ -136,6 +151,7 @@ class _MainShellState extends State<MainShell> {
       const PhotoAnalyzeView(),
       const ActivityHistoryView(),
       if (showReviewTab) const OperatorReviewView(),
+      if (showStaffPanel) const StaffConsoleView(),
     ];
 
     final rail = NavigationRail(
@@ -147,7 +163,7 @@ class _MainShellState extends State<MainShell> {
         padding: const EdgeInsets.only(bottom: 16, top: 8),
         child: Icon(Icons.shield_outlined, color: Colors.white.withValues(alpha: 0.85)),
       ),
-      destinations: _railDestinations(showReviewTab),
+      destinations: _railDestinations(showReviewTab, showStaffPanel),
     );
 
     final body = IndexedStack(
@@ -194,6 +210,17 @@ class _MainShellState extends State<MainShell> {
                       label: 'Guest',
                       icon: Icons.person_outline_rounded,
                       accent: Color(0xFF3B9EFF),
+                    ),
+                  ),
+                ),
+              if (auth.isBuiltInStaffSession)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Center(
+                    child: GlassChip(
+                      label: auth.isBuiltInSuperAdministrator ? 'Super Admin' : 'Admin',
+                      icon: Icons.admin_panel_settings_outlined,
+                      accent: const Color(0xFFFFB74D),
                     ),
                   ),
                 ),
@@ -272,7 +299,7 @@ class _MainShellState extends State<MainShell> {
                   indicatorColor: const Color(0xFF3B9EFF).withValues(alpha: 0.28),
                   selectedIndex: navIndex,
                   onDestinationSelected: _go,
-                  destinations: _bottomDestinations(showReviewTab),
+                  destinations: _bottomDestinations(showReviewTab, showStaffPanel),
                 ),
         );
       },

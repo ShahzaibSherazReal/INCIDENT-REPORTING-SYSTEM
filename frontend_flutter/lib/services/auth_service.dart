@@ -5,8 +5,6 @@ import '../models/app_user.dart';
 /// Hardcoded operator onboarding code (replace with admin-managed codes later).
 const String kOperatorInviteCode = '000000';
 
-enum LoginPortal { user, operator }
-
 class AuthService {
   final SupabaseClient _client = Supabase.instance.client;
 

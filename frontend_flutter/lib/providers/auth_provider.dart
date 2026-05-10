@@ -5,8 +5,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/app_user.dart';
 import '../services/auth_service.dart';
+import '../services/built_in_staff_auth.dart';
 
-enum LoginPortal { user, operator }
+enum LoginPortal { user, operator, administrator }
 
 class AuthProvider extends ChangeNotifier {
   AuthProvider(this._authService) {
@@ -21,16 +22,35 @@ class AuthProvider extends ChangeNotifier {
   AppUser? profile;
   bool isGuest = false;
 
-  bool get isAdmin => profile?.role == 'System Administrator';
+  /// Built-in Admin / Super Administrator (no Supabase session).
+  bool isBuiltInStaffSession = false;
+  BuiltInStaffTier builtInTier = BuiltInStaffTier.none;
 
-  /// Operators and legacy admins can review / validate alerts.
-  bool get canReviewAlerts => profile?.role == 'Operator' || profile?.role == 'System Administrator';
+  bool get isBuiltInSuperAdministrator =>
+      isBuiltInStaffSession && builtInTier == BuiltInStaffTier.superAdmin;
+
+  bool get canUseStaffPanel => isBuiltInStaffSession;
+
+  bool get isAdmin =>
+      profile?.role == 'System Administrator' ||
+      profile?.role == 'Admin' ||
+      profile?.role == 'Super Administrator';
+
+  bool get canReviewAlerts =>
+      profile?.role == 'Operator' ||
+      profile?.role == 'System Administrator' ||
+      profile?.role == 'Admin' ||
+      profile?.role == 'Super Administrator';
 
   Future<void> _init() async {
     session = _authService.currentSession;
     profile = await _authService.getCurrentProfile();
     _subscription = _authService.authStateChanges.listen((event) async {
       session = event.session;
+      if (isBuiltInStaffSession) {
+        notifyListeners();
+        return;
+      }
       profile = await _authService.getCurrentProfile();
       notifyListeners();
     });
@@ -46,8 +66,22 @@ class AuthProvider extends ChangeNotifier {
     isLoading = true;
     notifyListeners();
     try {
+      if (portal == LoginPortal.administrator) {
+        final tier = matchBuiltInStaff(identifier, password);
+        if (tier == BuiltInStaffTier.none) {
+          throw Exception('Invalid administrator credentials.');
+        }
+        isBuiltInStaffSession = true;
+        builtInTier = tier;
+        session = null;
+        profile = syntheticStaffProfile(tier);
+        return;
+      }
+
       final email = await _authService.resolveLoginEmail(identifier);
       await _authService.signInWithEmail(email: email, password: password);
+      isBuiltInStaffSession = false;
+      builtInTier = BuiltInStaffTier.none;
       profile = await _authService.getCurrentProfile();
       session = _authService.currentSession;
 
@@ -85,6 +119,8 @@ class AuthProvider extends ChangeNotifier {
         registerAsOperator: registerAsOperator,
         operatorCode: operatorCode,
       );
+      isBuiltInStaffSession = false;
+      builtInTier = BuiltInStaffTier.none;
       profile = await _authService.getCurrentProfile();
       session = _authService.currentSession;
     } finally {
@@ -94,17 +130,21 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
-    if (!isGuest) {
+    if (!isGuest && !isBuiltInStaffSession) {
       await _authService.signOut();
     }
     profile = null;
     session = null;
     isGuest = false;
+    isBuiltInStaffSession = false;
+    builtInTier = BuiltInStaffTier.none;
     notifyListeners();
   }
 
   void continueAsGuest() {
     isGuest = true;
+    isBuiltInStaffSession = false;
+    builtInTier = BuiltInStaffTier.none;
     notifyListeners();
   }
 

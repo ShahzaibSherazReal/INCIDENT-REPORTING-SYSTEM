@@ -157,4 +157,94 @@ class DatabaseService {
       throw Exception('Failed to toggle camera: ${response.body}');
     }
   }
+
+  Map<String, String> _staffTierHeaders(String tier) => {'X-AIRS-Built-In-Tier': tier};
+
+  /// Explains 404: Manage panel hits `/admin/*` on BACKEND_URL; old Railway builds omit those routes.
+  Never _throwStaffApiFailure(String label, http.Response response) {
+    final base = AppConfig.backendBaseUrl;
+    final code = response.statusCode;
+    final body = response.body;
+    if (code == 404) {
+      throw Exception(
+        '$label: 404 Not Found — server par `/admin/*` routes register nahi (purani backend deploy?). '
+        'Fix: latest `backend_python` Railway par redeploy karo, ya local: '
+        '`flutter run --dart-define=BACKEND_URL=http://localhost:8000` + uvicorn. '
+        'BACKEND_URL=$base  Response: $body',
+      );
+    }
+    throw Exception('$label: HTTP $code  Response: $body');
+  }
+
+  Future<List<Map<String, dynamic>>> fetchStaffUsers({required String tier}) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/users');
+    final response = await http.get(url, headers: _staffTierHeaders(tier));
+    if (response.statusCode != 200) {
+      _throwStaffApiFailure('Admin users list (/admin/users)', response);
+    }
+    final list = jsonDecode(response.body) as List<dynamic>;
+    return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+  }
+
+  Future<void> updateStaffUserRole({
+    required String tier,
+    required String userId,
+    required String role,
+  }) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/users/$userId');
+    final response = await http.patch(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        ..._staffTierHeaders(tier),
+      },
+      body: jsonEncode({'role': role}),
+    );
+    if (response.statusCode >= 300) {
+      _throwStaffApiFailure('Update user role (/admin/users)', response);
+    }
+  }
+
+  Future<Map<String, dynamic>> fetchAiConfig({required String tier}) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
+    final response = await http.get(url, headers: _staffTierHeaders(tier));
+    if (response.statusCode != 200) {
+      _throwStaffApiFailure('AI config (/admin/ai-config)', response);
+    }
+    return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> patchAiConfig({
+    required String tier,
+    double? confidenceThreshold,
+    double? processFps,
+    double? deviceFrameConfidence,
+  }) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
+    final body = <String, dynamic>{};
+    if (confidenceThreshold != null) body['confidence_threshold'] = confidenceThreshold;
+    if (processFps != null) body['process_fps'] = processFps;
+    if (deviceFrameConfidence != null) body['device_frame_confidence'] = deviceFrameConfidence;
+    final response = await http.patch(
+      url,
+      headers: {
+        'Content-Type': 'application/json',
+        ..._staffTierHeaders(tier),
+      },
+      body: jsonEncode(body),
+    );
+    if (response.statusCode >= 300) {
+      _throwStaffApiFailure('AI config save (/admin/ai-config)', response);
+    }
+    return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+  }
+
+  Future<Map<String, dynamic>> purgeEvidence({required String tier}) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/purge-evidence');
+    final response = await http.post(url, headers: _staffTierHeaders(tier));
+    if (response.statusCode >= 300) {
+      _throwStaffApiFailure('Purge evidence (/admin/purge-evidence)', response);
+    }
+    return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
+  }
 }

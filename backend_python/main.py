@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import shutil
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -68,6 +68,19 @@ class FalsePositivePayload(BaseModel):
 
 class OperatorValidatePayload(BaseModel):
     operator_validated: bool = True
+
+
+class AiConfigPayload(BaseModel):
+    confidence_threshold: Optional[float] = Field(default=None, ge=0.05, le=0.99)
+    process_fps: Optional[float] = Field(default=None, ge=0.25, le=30.0)
+    device_frame_confidence: Optional[float] = Field(default=None, ge=0.05, le=0.99)
+
+
+class UserRoleUpdatePayload(BaseModel):
+    role: str = Field(min_length=4, max_length=40)
+
+
+ALLOWED_ROLES = frozenset({"User", "Operator", "Admin", "Super Administrator", "System Administrator"})
 
 
 class DetectionEvent(BaseModel):
@@ -128,10 +141,29 @@ class AppState:
         self.model_labels: Dict[str, List[str]] = defaultdict(list)
         # Last loop time for POST /cameras/{id}/device-frame rate limiting (per camera_id).
         self.device_frame_last_ts: Dict[str, float] = {}
+        # Mutable AI tuning (defaults mirror env at startup).
+        self.confidence_threshold: float = CONFIDENCE_THRESHOLD
+        self.process_fps: float = PROCESS_FPS
+        self.device_frame_confidence: float = DEVICE_FRAME_CONFIDENCE
 
 
 state = AppState()
 app = FastAPI(title="AI Incident Reporting System API", version="1.0.0")
+
+
+async def require_staff_tier(
+    x_airs_built_in_tier: Optional[str] = Header(None, alias="X-AIRS-Built-In-Tier"),
+) -> str:
+    tier = (x_airs_built_in_tier or "").strip().lower()
+    if tier not in ("admin", "super"):
+        raise HTTPException(status_code=403, detail="Built-in staff tier header missing or invalid")
+    return tier
+
+
+async def require_super_staff(tier: str = Depends(require_staff_tier)) -> str:
+    if tier != "super":
+        raise HTTPException(status_code=403, detail="Super administrator required")
+    return tier
 
 # allow_credentials=False: browsers reject Access-Control-Allow-Origin=* together with
 # credentials; Flutter Web → backend is cross-origin and would get "Failed to fetch".
@@ -247,7 +279,7 @@ async def dispatch_detections_from_frame(
     confidence_threshold: Optional[float] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     """Run all loaded models on one BGR frame; persist incidents and WS broadcast (same as live stream)."""
-    thresh = CONFIDENCE_THRESHOLD if confidence_threshold is None else confidence_threshold
+    thresh = state.confidence_threshold if confidence_threshold is None else confidence_threshold
     emitted = 0
     summaries: List[Dict[str, Any]] = []
     for model_name, model in state.models.items():
@@ -305,10 +337,10 @@ async def dispatch_detections_from_frame(
 
 
 async def process_camera_stream(camera_id: str) -> None:
-    min_interval = 1.0 / PROCESS_FPS
     last_processed = 0.0
 
     while True:
+        min_interval = 1.0 / max(state.process_fps, 0.25)
         camera = state.cameras.get(camera_id)
         if not camera:
             return
@@ -496,7 +528,7 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
 
     loop = asyncio.get_event_loop()
     now = loop.time()
-    min_interval = 1.0 / max(PROCESS_FPS, 0.25)
+    min_interval = 1.0 / max(state.process_fps, 0.25)
     last = state.device_frame_last_ts.get(camera_id, 0.0)
     if now - last < min_interval:
         return {"status": "throttled", "skipped": True, "detections_emitted": 0, "detections": []}
@@ -511,14 +543,14 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
         camera_id,
         cam["name"],
         frame,
-        confidence_threshold=DEVICE_FRAME_CONFIDENCE,
+        confidence_threshold=state.device_frame_confidence,
     )
     if emitted == 0:
         logger.debug(
             "device-frame processed camera_id=%s shape=%s no boxes above threshold=%s",
             camera_id,
             getattr(frame, "shape", None),
-            DEVICE_FRAME_CONFIDENCE,
+            state.device_frame_confidence,
         )
     return {"status": "ok", "detections_emitted": emitted, "detections": summaries}
 
@@ -559,7 +591,7 @@ async def analyze_image(file: UploadFile = File(...)) -> Dict[str, Any]:
         boxes = getattr(prediction, "boxes", [])
         for box in boxes:
             conf = float(box.conf[0].item())
-            if conf < CONFIDENCE_THRESHOLD:
+            if conf < state.confidence_threshold:
                 continue
             class_id = int(box.cls[0].item())
             raw_label = prediction.names.get(class_id, "accident")
@@ -591,7 +623,7 @@ async def analyze_video(file: UploadFile = File(...)) -> Dict[str, Any]:
 
     detections = []
     frame_count = 0
-    process_interval = int(capture.get(cv2.CAP_PROP_FPS) / PROCESS_FPS)
+    process_interval = int(capture.get(cv2.CAP_PROP_FPS) / max(state.process_fps, 0.25))
     if process_interval < 1: process_interval = 1
 
     try:
@@ -610,7 +642,7 @@ async def analyze_video(file: UploadFile = File(...)) -> Dict[str, Any]:
                     boxes = getattr(prediction, "boxes", [])
                     for box in boxes:
                         conf = float(box.conf[0].item())
-                        if conf < CONFIDENCE_THRESHOLD:
+                        if conf < state.confidence_threshold:
                             continue
 
                         class_id = int(box.cls[0].item())
@@ -634,6 +666,120 @@ async def analyze_video(file: UploadFile = File(...)) -> Dict[str, Any]:
             os.remove(file_path)
 
     return {"status": "completed", "detections_count": len(detections), "detections": detections}
+
+
+@app.get("/admin/users")
+async def admin_list_users(_tier: str = Depends(require_staff_tier)) -> List[Dict[str, Any]]:
+    del _tier
+    if not state.supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    response = await asyncio.to_thread(
+        lambda: state.supabase.table("users").select("*").order("created_at", desc=True).execute()
+    )
+    return response.data or []
+
+
+@app.patch("/admin/users/{user_id}")
+async def admin_update_user_role(
+    user_id: str,
+    payload: UserRoleUpdatePayload,
+    tier: str = Depends(require_staff_tier),
+) -> Dict[str, Any]:
+    if not state.supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    role = payload.role.strip()
+    if role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    privileged_roles = {"Admin", "Super Administrator", "System Administrator"}
+
+    def _fetch_row() -> Optional[Dict[str, Any]]:
+        resp = state.supabase.table("users").select("id,role,email").eq("id", user_id).limit(1).execute()
+        rows = resp.data or []
+        return rows[0] if rows else None
+
+    existing = await asyncio.to_thread(_fetch_row)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if tier == "admin":
+        if existing.get("role") in privileged_roles:
+            raise HTTPException(status_code=403, detail="Admin cannot modify administrator accounts")
+        if role in privileged_roles:
+            raise HTTPException(status_code=403, detail="Only super administrator can assign administrator roles")
+        if role not in ("User", "Operator"):
+            raise HTTPException(status_code=403, detail="Admin can only assign User or Operator roles")
+
+    await asyncio.to_thread(
+        lambda: state.supabase.table("users").update({"role": role}).eq("id", user_id).execute()
+    )
+    return {"status": "ok", "id": user_id, "role": role}
+
+
+@app.get("/admin/ai-config")
+async def admin_get_ai_config(_tier: str = Depends(require_super_staff)) -> Dict[str, Any]:
+    del _tier
+    return {
+        "confidence_threshold": state.confidence_threshold,
+        "process_fps": state.process_fps,
+        "device_frame_confidence": state.device_frame_confidence,
+    }
+
+
+@app.patch("/admin/ai-config")
+async def admin_patch_ai_config(
+    payload: AiConfigPayload,
+    _tier: str = Depends(require_super_staff),
+) -> Dict[str, Any]:
+    del _tier
+    if payload.confidence_threshold is not None:
+        state.confidence_threshold = payload.confidence_threshold
+    if payload.process_fps is not None:
+        state.process_fps = payload.process_fps
+    if payload.device_frame_confidence is not None:
+        state.device_frame_confidence = payload.device_frame_confidence
+    return {
+        "confidence_threshold": state.confidence_threshold,
+        "process_fps": state.process_fps,
+        "device_frame_confidence": state.device_frame_confidence,
+    }
+
+
+@app.post("/admin/purge-evidence")
+async def admin_purge_evidence(_tier: str = Depends(require_super_staff)) -> Dict[str, Any]:
+    del _tier
+    deleted_incidents = 0
+    deleted_files = 0
+
+    if state.supabase:
+        try:
+
+            def _delete_all() -> int:
+                resp = (
+                    state.supabase.table("incidents")
+                    .delete()
+                    .neq("id", "00000000-0000-0000-0000-000000000000")
+                    .execute()
+                )
+                return len(resp.data or [])
+
+            deleted_incidents = await asyncio.to_thread(_delete_all)
+        except Exception:
+            logger.exception("purge-evidence: incidents delete failed")
+
+    try:
+        for path in SNAPSHOTS_DIR.glob("*.jpg"):
+            path.unlink(missing_ok=True)
+            deleted_files += 1
+    except OSError as exc:
+        logger.warning("purge-evidence: snapshot file cleanup: %s", exc)
+
+    return {
+        "status": "ok",
+        "incidents_removed": deleted_incidents,
+        "snapshot_files_removed": deleted_files,
+    }
+
 
 @app.websocket("/ws/detections")
 async def detection_ws(websocket: WebSocket) -> None:

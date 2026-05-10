@@ -76,7 +76,10 @@ class AirsApp extends StatelessWidget {
               ),
             );
           }
-          if (authProvider.session == null && !authProvider.isGuest) {
+          final signedIn = authProvider.session != null ||
+              authProvider.isGuest ||
+              authProvider.isBuiltInStaffSession;
+          if (!signedIn) {
             return const AuthView();
           }
           return ChangeNotifierProvider(
