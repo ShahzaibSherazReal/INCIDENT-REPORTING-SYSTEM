@@ -58,18 +58,24 @@ class DatabaseService {
     return id;
   }
 
-  /// Sends one JPEG for server-side detection (live phone camera).
+  Future<void> deleteCameraOnBackend(String cameraId) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/cameras/$cameraId');
+    final response = await http.delete(url);
+    if (response.statusCode >= 300 && response.statusCode != 404) {
+      throw Exception('Delete camera failed: ${response.statusCode} ${response.body}');
+    }
+  }
+
+  /// Phone realtime stream → same pipeline as server ingest (`device://` cameras).
   Future<Map<String, dynamic>> uploadDeviceCameraFrame({
     required String cameraId,
     required List<int> imageBytes,
   }) async {
     final url = Uri.parse('${AppConfig.backendBaseUrl}/cameras/$cameraId/device-frame');
     final request = http.MultipartRequest('POST', url)
-      ..files.add(
-        http.MultipartFile.fromBytes('file', imageBytes, filename: 'frame.jpg'),
-      );
-    final streamed = await request.send().timeout(const Duration(seconds: 90));
-    final body = await streamed.stream.bytesToString().timeout(const Duration(seconds: 90));
+      ..files.add(http.MultipartFile.fromBytes('file', imageBytes, filename: 'frame.jpg'));
+    final streamed = await request.send().timeout(const Duration(seconds: 120));
+    final body = await streamed.stream.bytesToString().timeout(const Duration(seconds: 120));
     if (streamed.statusCode >= 300) {
       throw Exception('device-frame ${streamed.statusCode}: $body');
     }

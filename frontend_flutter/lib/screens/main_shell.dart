@@ -10,6 +10,7 @@ import 'activity_history_view.dart';
 import 'landing_view.dart';
 import 'live_operations_view.dart';
 import 'photo_analyze_view.dart';
+import 'realtime_device_view.dart';
 import 'video_analyze_view.dart';
 
 /// Root shell after auth: landing + section navigation (rail / bottom bar).
@@ -38,6 +39,7 @@ class _MainShellState extends State<MainShell> {
     final pages = <Widget>[
       const LandingView(),
       const LiveOperationsView(),
+      RealtimeDeviceView(active: _index == 2),
       const VideoAnalyzeView(),
       const PhotoAnalyzeView(),
       const ActivityHistoryView(),
@@ -68,6 +70,11 @@ class _MainShellState extends State<MainShell> {
               label: Text('Live'),
             ),
             NavigationRailDestination(
+              icon: Icon(Icons.bolt_outlined),
+              selectedIcon: Icon(Icons.bolt_rounded),
+              label: Text('Realtime'),
+            ),
+            NavigationRailDestination(
               icon: Icon(Icons.movie_outlined),
               selectedIcon: Icon(Icons.movie_rounded),
               label: Text('Video'),
@@ -90,7 +97,7 @@ class _MainShellState extends State<MainShell> {
           children: pages,
         );
 
-        final showAlertsDrawer = !wide && _index == 1;
+        final showAlertsDrawer = !wide && (_index == 1 || _index == 2);
 
         return Scaffold(
           key: _scaffoldKey,
@@ -199,6 +206,11 @@ class _MainShellState extends State<MainShell> {
                       icon: Icon(Icons.grid_view_outlined),
                       selectedIcon: Icon(Icons.grid_view_rounded),
                       label: 'Live',
+                    ),
+                    NavigationDestination(
+                      icon: Icon(Icons.bolt_outlined),
+                      selectedIcon: Icon(Icons.bolt_rounded),
+                      label: 'Realtime',
                     ),
                     NavigationDestination(
                       icon: Icon(Icons.movie_outlined),

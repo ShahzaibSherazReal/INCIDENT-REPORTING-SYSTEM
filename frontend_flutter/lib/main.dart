@@ -28,6 +28,7 @@ Future<void> main() async {
   runApp(
     MultiProvider(
       providers: [
+        Provider<DatabaseService>.value(value: databaseService),
         ChangeNotifierProvider(create: (_) => AuthProvider(authService)),
         ChangeNotifierProvider(create: (_) => CameraProvider(databaseService)),
         ChangeNotifierProvider(create: (_) => IncidentProvider(databaseService)),

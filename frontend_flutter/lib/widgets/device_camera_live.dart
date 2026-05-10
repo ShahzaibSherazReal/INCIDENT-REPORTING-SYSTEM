@@ -160,7 +160,8 @@ class _DeviceCameraLiveScreenState extends State<DeviceCameraLiveScreen> {
     if (desc == null) return;
     final controller = CameraController(
       desc,
-      kIsWeb ? ResolutionPreset.medium : ResolutionPreset.high,
+      // High preset causes noticeable lag on many phones; medium is a better default.
+      ResolutionPreset.medium,
       enableAudio: false,
     );
     try {

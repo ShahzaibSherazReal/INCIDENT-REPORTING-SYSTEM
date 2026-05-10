@@ -51,37 +51,15 @@ class CameraProvider extends ChangeNotifier {
     await loadCameras();
   }
 
-  Future<void> uploadDeviceCameraFrame(String backendCameraId, List<int> jpegBytes) async {
-    await _databaseService.uploadDeviceCameraFrame(cameraId: backendCameraId, imageBytes: jpegBytes);
-  }
-
-  /// Picks this device's camera (auto if one, dialog if many) and adds a grid tile.
-  /// Registers `device://…` on the backend so frames can be analyzed without a stream URL.
+  /// Picks this device's camera (auto if one, dialog if many) and adds a grid preview tile.
   Future<void> addLocalDeviceFeedFromPicker(BuildContext context) async {
     final selected = await pickDeviceCameraDescription(context);
     if (selected == null || !context.mounted) return;
-    final feedId = 'local-${DateTime.now().millisecondsSinceEpoch}';
-    final displayName = deviceCameraDisplayLabel(selected);
-    String? backendCameraId;
-    try {
-      backendCameraId = await _databaseService.createCameraOnBackend(
-        name: displayName,
-        streamUrl: 'device://$feedId',
-        isActive: false,
-      );
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-          SnackBar(content: Text('Live AI unavailable (camera not registered): $e')),
-        );
-      }
-    }
     localDeviceFeeds.add(
       LocalDeviceFeed(
-        id: feedId,
-        displayName: displayName,
+        id: 'local-${DateTime.now().millisecondsSinceEpoch}',
+        displayName: deviceCameraDisplayLabel(selected),
         camera: selected,
-        backendCameraId: backendCameraId,
       ),
     );
     notifyListeners();

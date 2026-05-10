@@ -1,7 +1,5 @@
-import 'dart:async';
-
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
@@ -9,7 +7,7 @@ import 'package:shimmer/shimmer.dart';
 import '../models/camera_model.dart';
 import '../models/local_device_feed.dart';
 import '../providers/camera_provider.dart';
-import '../services/app_config.dart';
+import '../services/analysis_flow.dart';
 import 'device_camera_live.dart';
 import 'glass.dart';
 
@@ -163,9 +161,8 @@ Future<void> showAddCameraSheet(BuildContext context) async {
                         ),
                       ] else ...[
                         Text(
-                          'Adds a preview tile from this phone or laptop. A backend camera row is created '
-                          '(device://…) so you can turn AI·on and send JPEG snapshots for detection. '
-                          'Web preview only — no uploads from the browser camera.',
+                          'Adds a camera preview on Live. Use the scan button on the tile to capture one '
+                          'photo and analyze it (same as Photo tab). Browser camera support is limited.',
                           style: TextStyle(color: Colors.white.withValues(alpha: 0.48), fontSize: 13, height: 1.35),
                         ),
                         const SizedBox(height: 20),
@@ -416,58 +413,24 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
   CameraController? _controller;
   bool _ready = false;
   bool _previewOn = true;
-  bool _detectionOn = true;
   String? _initError;
-  Timer? _frameTimer;
-  bool _uploadBusy = false;
+  bool _analyzeBusy = false;
 
-  void _cancelFrameUpload() {
-    _frameTimer?.cancel();
-    _frameTimer = null;
-  }
-
-  void _scheduleFrameUpload() {
-    _cancelFrameUpload();
-    final backendId = widget.feed.backendCameraId;
-    if (backendId == null || !_detectionOn || !_previewOn || kIsWeb) return;
-    Timer(const Duration(milliseconds: 400), () {
-      if (mounted) _captureAndUpload();
-    });
-    _frameTimer = Timer.periodic(
-      Duration(milliseconds: AppConfig.deviceFrameUploadIntervalMs),
-      (_) => _captureAndUpload(),
-    );
-  }
-
-  Future<void> _captureAndUpload() async {
-    if (!mounted || _uploadBusy) return;
+  Future<void> _captureAndAnalyze() async {
     final c = _controller;
-    final backendId = widget.feed.backendCameraId;
-    if (c == null || backendId == null || !c.value.isInitialized || !_detectionOn || !_previewOn) return;
-    _uploadBusy = true;
-    var pausedPreview = false;
+    if (c == null || !c.value.isInitialized || !_previewOn || _analyzeBusy) return;
+    setState(() => _analyzeBusy = true);
     try {
-      try {
-        await c.pausePreview();
-        pausedPreview = true;
-      } catch (_) {
-        // Some profiles ignore pause; still try capture.
-      }
       final xfile = await c.takePicture();
       final bytes = await xfile.readAsBytes();
       if (!mounted) return;
-      await context.read<CameraProvider>().uploadDeviceCameraFrame(backendId, bytes);
+      await runDeviceCameraAnalysisFromBytes(context, imageBytes: bytes, fileName: 'live_camera.jpg');
     } catch (e) {
-      if (kDebugMode) {
-        debugPrint('[device-frame upload] $e');
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('$e')));
       }
     } finally {
-      if (pausedPreview) {
-        try {
-          await c.resumePreview();
-        } catch (_) {}
-      }
-      _uploadBusy = false;
+      if (mounted) setState(() => _analyzeBusy = false);
     }
   }
 
@@ -481,7 +444,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
     _initError = null;
     final c = CameraController(
       widget.feed.camera,
-      // Medium reduces Android capture failures while preview runs and is enough for YOLO.
       ResolutionPreset.medium,
       enableAudio: false,
     );
@@ -494,9 +456,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
       setState(() {
         _controller = c;
         _ready = c.value.isInitialized;
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _scheduleFrameUpload();
       });
     } catch (e) {
       await c.dispose();
@@ -511,7 +470,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
   }
 
   Future<void> _stopPreview() async {
-    _cancelFrameUpload();
     await _controller?.dispose();
     if (!mounted) return;
     setState(() {
@@ -539,7 +497,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
   Future<void> _openFullscreenPreview() async {
     if (!_canExpandLocalPreview) return;
     final c = _controller!;
-    _cancelFrameUpload();
     setState(() {
       _controller = null;
       _ready = false;
@@ -559,9 +516,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
       setState(() {
         _controller = c;
         _ready = true;
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _scheduleFrameUpload();
       });
     } else {
       await _startPreview();
@@ -656,7 +610,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
 
   @override
   void dispose() {
-    _cancelFrameUpload();
     _controller?.dispose();
     super.dispose();
   }
@@ -683,10 +636,8 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
                 children: [
                   Expanded(
                     child: Tooltip(
-                      message: widget.feed.backendCameraId != null
-                          ? 'This device — JPEG frames sent to the backend for detection (~every '
-                              '${AppConfig.deviceFrameUploadIntervalMs ~/ 1000}s when AI is on). Tap preview for fullscreen.'
-                          : 'This device — AI needs backend registration (check connection when adding). Tap preview for fullscreen.',
+                      message:
+                          'Tap the scan button on the preview to capture and analyze. Tap the preview for fullscreen.',
                       child: Text(
                         '${widget.feed.displayName} · local',
                         style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
@@ -695,42 +646,6 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
                       ),
                     ),
                   ),
-                  if (widget.feed.backendCameraId != null && !kIsWeb)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 4),
-                      child: Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: () {
-                            setState(() => _detectionOn = !_detectionOn);
-                            if (_detectionOn) {
-                              _scheduleFrameUpload();
-                            } else {
-                              _cancelFrameUpload();
-                            }
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: _detectionOn
-                                  ? const Color(0xFF4CAF50).withValues(alpha: 0.22)
-                                  : Colors.white.withValues(alpha: 0.08),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-                            ),
-                            child: Text(
-                              _detectionOn ? 'AI·on' : 'AI·off',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white.withValues(alpha: _detectionOn ? 0.92 : 0.45),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                   SizedBox(
                     height: 28,
                     width: 46,
@@ -761,35 +676,64 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(10),
                 child: _canExpandLocalPreview
-                    ? GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _openFullscreenPreview,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            _buildLocalPreviewArea(),
-                            Positioned(
-                              right: 5,
-                              bottom: 5,
-                              child: IgnorePointer(
-                                child: DecoratedBox(
-                                  decoration: BoxDecoration(
-                                    color: Colors.black.withValues(alpha: 0.48),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(5),
-                                    child: Icon(
-                                      Icons.fullscreen_rounded,
-                                      size: 17,
-                                      color: Colors.white.withValues(alpha: 0.9),
-                                    ),
+                    ? Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _openFullscreenPreview,
+                            child: _buildLocalPreviewArea(),
+                          ),
+                          Positioned(
+                            left: 6,
+                            bottom: 6,
+                            child: Material(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                onTap: _analyzeBusy ? null : _captureAndAnalyze,
+                                child: SizedBox(
+                                  width: 44,
+                                  height: 44,
+                                  child: Center(
+                                    child: _analyzeBusy
+                                        ? const SizedBox(
+                                            width: 22,
+                                            height: 22,
+                                            child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white70),
+                                          )
+                                        : Icon(
+                                            Icons.document_scanner_outlined,
+                                            size: 22,
+                                            color: Colors.white.withValues(alpha: 0.92),
+                                          ),
                                   ),
                                 ),
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                          Positioned(
+                            right: 6,
+                            bottom: 6,
+                            child: IgnorePointer(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.48),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(5),
+                                  child: Icon(
+                                    Icons.fullscreen_rounded,
+                                    size: 17,
+                                    color: Colors.white.withValues(alpha: 0.9),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       )
                     : _buildLocalPreviewArea(),
               ),

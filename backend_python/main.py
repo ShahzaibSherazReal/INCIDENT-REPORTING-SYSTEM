@@ -5,7 +5,7 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 from dotenv import load_dotenv
@@ -241,10 +241,11 @@ async def dispatch_detections_from_frame(
     frame,
     *,
     confidence_threshold: Optional[float] = None,
-) -> int:
+) -> Tuple[int, List[Dict[str, Any]]]:
     """Run all loaded models on one BGR frame; persist incidents and WS broadcast (same as live stream)."""
     thresh = CONFIDENCE_THRESHOLD if confidence_threshold is None else confidence_threshold
     emitted = 0
+    summaries: List[Dict[str, Any]] = []
     for model_name, model in state.models.items():
         results = await run_yolo_inference(model, frame)
         if not results:
@@ -288,8 +289,15 @@ async def dispatch_detections_from_frame(
                 model_name=model_name,
             )
             await state.ws_manager.broadcast({"type": "incident_detected", "payload": event.model_dump(mode="json")})
+            summaries.append(
+                {
+                    "incident_type": incident_type,
+                    "confidence_score": round(conf, 4),
+                    "model_name": model_name,
+                }
+            )
             emitted += 1
-    return emitted
+    return emitted, summaries
 
 
 async def process_camera_stream(camera_id: str) -> None:
@@ -474,7 +482,7 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
     min_interval = 1.0 / max(PROCESS_FPS, 0.25)
     last = state.device_frame_last_ts.get(camera_id, 0.0)
     if now - last < min_interval:
-        return {"status": "throttled", "skipped": True}
+        return {"status": "throttled", "skipped": True, "detections_emitted": 0, "detections": []}
 
     buf = np.frombuffer(raw, dtype=np.uint8)
     frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
@@ -482,7 +490,7 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
         raise HTTPException(status_code=400, detail="Could not decode image")
 
     state.device_frame_last_ts[camera_id] = now
-    emitted = await dispatch_detections_from_frame(
+    emitted, summaries = await dispatch_detections_from_frame(
         camera_id,
         cam["name"],
         frame,
@@ -495,7 +503,7 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
             getattr(frame, "shape", None),
             DEVICE_FRAME_CONFIDENCE,
         )
-    return {"status": "ok", "detections_emitted": emitted}
+    return {"status": "ok", "detections_emitted": emitted, "detections": summaries}
 
 
 @app.post("/cameras/{camera_id}/toggle")

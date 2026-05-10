@@ -54,6 +54,19 @@ class AnalysisService {
     return AnalysisPickResult(results: map, fileName: file.name);
   }
 
+  /// Same as [pickAndAnalyzeImage] but with bytes already in memory (e.g. camera capture).
+  Future<Map<String, dynamic>> analyzeImageBytes(
+    List<int> bytes, {
+    String filename = 'capture.jpg',
+  }) async {
+    return _postMultipartAnalyze(
+      Uri.parse('${AppConfig.backendBaseUrl}/analyze-image'),
+      bytes,
+      filename,
+      timeout: const Duration(minutes: 5),
+    );
+  }
+
   Future<Map<String, dynamic>> _postMultipartAnalyze(
     Uri url,
     List<int> bytes,
