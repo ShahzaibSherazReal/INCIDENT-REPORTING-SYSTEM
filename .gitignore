@@ -1,0 +1,20 @@
+# Secrets — never commit
+backend_python/.env
+*.pem
+
+# Python
+backend_python/.venv/
+__pycache__/
+*.py[cod]
+
+# Flutter / Dart
+frontend_flutter/build/
+frontend_flutter/.dart_tool/
+frontend_flutter/.flutter-plugins-dependencies
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
