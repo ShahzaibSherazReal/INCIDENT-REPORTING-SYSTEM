@@ -385,6 +385,11 @@ async def start_camera_task(camera_id: str) -> None:
 @app.on_event("startup")
 async def startup_event() -> None:
     state.supabase = get_supabase()
+    if not state.supabase:
+        logger.warning(
+            "Supabase client not configured — set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY "
+            "(Railway Variables). /admin/users returns 503 until both are set."
+        )
 
     model_files = [MODELS_DIR / "yolo_model_1.pt", MODELS_DIR / "yolo_model_2.pt"]
     for model_path in model_files:
@@ -415,6 +420,16 @@ async def health() -> Dict[str, Any]:
         "status": "ok",
         "models_loaded": list(state.models.keys()),
         "camera_count": len(state.cameras),
+        "supabase_configured": state.supabase is not None,
+    }
+
+
+@app.get("/admin/ping")
+async def admin_ping() -> Dict[str, Any]:
+    """Public sanity check that this deploy includes admin routes (no auth)."""
+    return {
+        "admin_routes": True,
+        "supabase_configured": state.supabase is not None,
     }
 
 
@@ -726,12 +741,18 @@ async def admin_get_ai_config(_tier: str = Depends(require_super_staff)) -> Dict
     }
 
 
-@app.patch("/admin/ai-config")
-async def admin_patch_ai_config(
-    payload: AiConfigPayload,
-    _tier: str = Depends(require_super_staff),
-) -> Dict[str, Any]:
+# Alias: same handler (some proxies/CDNs mishandle hyphenated paths; Flutter uses primary URL).
+@app.get("/admin/aiconfig")
+async def admin_get_ai_config_alias(_tier: str = Depends(require_super_staff)) -> Dict[str, Any]:
     del _tier
+    return {
+        "confidence_threshold": state.confidence_threshold,
+        "process_fps": state.process_fps,
+        "device_frame_confidence": state.device_frame_confidence,
+    }
+
+
+def _apply_ai_config_patch(payload: AiConfigPayload) -> Dict[str, Any]:
     if payload.confidence_threshold is not None:
         state.confidence_threshold = payload.confidence_threshold
     if payload.process_fps is not None:
@@ -743,6 +764,24 @@ async def admin_patch_ai_config(
         "process_fps": state.process_fps,
         "device_frame_confidence": state.device_frame_confidence,
     }
+
+
+@app.patch("/admin/ai-config")
+async def admin_patch_ai_config(
+    payload: AiConfigPayload,
+    _tier: str = Depends(require_super_staff),
+) -> Dict[str, Any]:
+    del _tier
+    return _apply_ai_config_patch(payload)
+
+
+@app.patch("/admin/aiconfig")
+async def admin_patch_ai_config_alias(
+    payload: AiConfigPayload,
+    _tier: str = Depends(require_super_staff),
+) -> Dict[str, Any]:
+    del _tier
+    return _apply_ai_config_patch(payload)
 
 
 @app.post("/admin/purge-evidence")

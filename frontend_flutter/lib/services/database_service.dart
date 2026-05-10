@@ -173,6 +173,16 @@ class DatabaseService {
         'BACKEND_URL=$base  Response: $body',
       );
     }
+    if (code == 503 && body.toLowerCase().contains('database not configured')) {
+      throw Exception(
+        '$label: HTTP 503 — Railway/backend par Supabase env vars missing hain. '
+        'Variables me EXACT naam se lagao:\n'
+        '• SUPABASE_URL = https://<project>.supabase.co\n'
+        '• SUPABASE_SERVICE_ROLE_KEY = service_role JWT (anon key NAHI)\n'
+        'Save karke service redeploy/restart karo. Phir /health me supabase_configured: true aana chahiye.\n'
+        'BACKEND_URL=$base  Response: $body',
+      );
+    }
     throw Exception('$label: HTTP $code  Response: $body');
   }
 
@@ -206,10 +216,15 @@ class DatabaseService {
   }
 
   Future<Map<String, dynamic>> fetchAiConfig({required String tier}) async {
-    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
-    final response = await http.get(url, headers: _staffTierHeaders(tier));
+    final headers = _staffTierHeaders(tier);
+    var url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
+    var response = await http.get(url, headers: headers);
+    if (response.statusCode == 404) {
+      url = Uri.parse('${AppConfig.backendBaseUrl}/admin/aiconfig');
+      response = await http.get(url, headers: headers);
+    }
     if (response.statusCode != 200) {
-      _throwStaffApiFailure('AI config (/admin/ai-config)', response);
+      _throwStaffApiFailure('AI config (GET /admin/ai-config)', response);
     }
     return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
   }
@@ -220,21 +235,23 @@ class DatabaseService {
     double? processFps,
     double? deviceFrameConfidence,
   }) async {
-    final url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
+    final headers = {
+      'Content-Type': 'application/json',
+      ..._staffTierHeaders(tier),
+    };
     final body = <String, dynamic>{};
     if (confidenceThreshold != null) body['confidence_threshold'] = confidenceThreshold;
     if (processFps != null) body['process_fps'] = processFps;
     if (deviceFrameConfidence != null) body['device_frame_confidence'] = deviceFrameConfidence;
-    final response = await http.patch(
-      url,
-      headers: {
-        'Content-Type': 'application/json',
-        ..._staffTierHeaders(tier),
-      },
-      body: jsonEncode(body),
-    );
+    final encoded = jsonEncode(body);
+    var url = Uri.parse('${AppConfig.backendBaseUrl}/admin/ai-config');
+    var response = await http.patch(url, headers: headers, body: encoded);
+    if (response.statusCode == 404) {
+      url = Uri.parse('${AppConfig.backendBaseUrl}/admin/aiconfig');
+      response = await http.patch(url, headers: headers, body: encoded);
+    }
     if (response.statusCode >= 300) {
-      _throwStaffApiFailure('AI config save (/admin/ai-config)', response);
+      _throwStaffApiFailure('AI config save (PATCH /admin/ai-config)', response);
     }
     return Map<String, dynamic>.from(jsonDecode(response.body) as Map);
   }

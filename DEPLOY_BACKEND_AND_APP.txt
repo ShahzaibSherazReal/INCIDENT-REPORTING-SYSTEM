@@ -27,6 +27,10 @@ PART A — BACKEND CLOUD PAR DEPLOY (high level)
    SUPABASE_URL              = tumhari Supabase project URL (https://....supabase.co)
    SUPABASE_SERVICE_ROLE_KEY = Supabase dashboard → Settings → API → service_role key
                               (ye SECRET hai — kabhi app/client code mein commit mat karo)
+                              Zaroori: naam typo NA ho — code sirf ye env vars dekhta hai:
+                              SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+                              (SERVICE_ROLE_KEY alag naam Railway par NA rakho.)
+                              Ye na hon → Manage → Users par HTTP 503 "Database not configured".
 
    SUPABASE_SNAPSHOT_BUCKET  = optional; default usually "incident-snapshots"
                               (migration ke mutabiq jo bucket name ho)
