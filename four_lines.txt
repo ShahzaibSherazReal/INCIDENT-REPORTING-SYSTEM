@@ -1,0 +1,4 @@
+Line 1 — startup checklist for local dev.
+Line 2 — Supabase URL + keys stay in .env only (not in Git).
+Line 3 — Backend: backend_python → start_backend.bat or uvicorn.
+Line 4 — Flutter: frontend_flutter → flutter run (optional BACKEND_URL define).
