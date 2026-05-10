@@ -6,6 +6,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/app_user.dart';
 import '../services/auth_service.dart';
 
+enum LoginPortal { user, operator }
+
 class AuthProvider extends ChangeNotifier {
   AuthProvider(this._authService) {
     _init();
@@ -21,6 +23,9 @@ class AuthProvider extends ChangeNotifier {
 
   bool get isAdmin => profile?.role == 'System Administrator';
 
+  /// Operators and legacy admins can review / validate alerts.
+  bool get canReviewAlerts => profile?.role == 'Operator' || profile?.role == 'System Administrator';
+
   Future<void> _init() async {
     session = _authService.currentSession;
     profile = await _authService.getCurrentProfile();
@@ -33,13 +38,59 @@ class AuthProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> signIn(String email, String password) async {
+  Future<void> signIn({
+    required String identifier,
+    required String password,
+    required LoginPortal portal,
+  }) async {
     isLoading = true;
     notifyListeners();
-    await _authService.signIn(email: email, password: password);
-    profile = await _authService.getCurrentProfile();
-    isLoading = false;
+    try {
+      final email = await _authService.resolveLoginEmail(identifier);
+      await _authService.signInWithEmail(email: email, password: password);
+      profile = await _authService.getCurrentProfile();
+      session = _authService.currentSession;
+
+      if (portal == LoginPortal.operator) {
+        final r = profile?.role;
+        if (r != 'Operator' && r != 'System Administrator') {
+          await _authService.signOut();
+          profile = null;
+          session = null;
+          throw Exception(
+            'This account is not registered as an operator. Sign in as User or create an operator account.',
+          );
+        }
+      }
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> signUp({
+    required String email,
+    required String username,
+    required String password,
+    required bool registerAsOperator,
+    required String operatorCode,
+  }) async {
+    isLoading = true;
     notifyListeners();
+    try {
+      await _authService.signUp(
+        email: email,
+        username: username,
+        password: password,
+        registerAsOperator: registerAsOperator,
+        operatorCode: operatorCode,
+      );
+      profile = await _authService.getCurrentProfile();
+      session = _authService.currentSession;
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
   }
 
   Future<void> signOut() async {

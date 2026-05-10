@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/supabase_network_feedback.dart';
+import 'signup_view.dart';
 import '../widgets/glass.dart';
 
 class AuthView extends StatefulWidget {
@@ -12,9 +14,10 @@ class AuthView extends StatefulWidget {
 }
 
 class _AuthViewState extends State<AuthView> with SingleTickerProviderStateMixin {
-  final _emailCtrl = TextEditingController();
+  final _identifierCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   String? _error;
+  LoginPortal _portal = LoginPortal.user;
 
   late final AnimationController _intro = AnimationController(
     vsync: this,
@@ -24,9 +27,15 @@ class _AuthViewState extends State<AuthView> with SingleTickerProviderStateMixin
   @override
   void dispose() {
     _intro.dispose();
-    _emailCtrl.dispose();
+    _identifierCtrl.dispose();
     _passwordCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _openSignUp() async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(builder: (_) => const SignUpView()),
+    );
   }
 
   @override
@@ -80,13 +89,43 @@ class _AuthViewState extends State<AuthView> with SingleTickerProviderStateMixin
                               letterSpacing: 0.3,
                             ),
                           ),
-                          const SizedBox(height: 28),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Sign in as',
+                            style: TextStyle(fontSize: 12, color: Colors.white.withValues(alpha: 0.48)),
+                          ),
+                          const SizedBox(height: 8),
+                          SegmentedButton<LoginPortal>(
+                            segments: const [
+                              ButtonSegment(
+                                value: LoginPortal.user,
+                                label: Text('User'),
+                                icon: Icon(Icons.person_outline_rounded, size: 18),
+                              ),
+                              ButtonSegment(
+                                value: LoginPortal.operator,
+                                label: Text('Operator'),
+                                icon: Icon(Icons.engineering_outlined, size: 18),
+                              ),
+                            ],
+                            selected: {_portal},
+                            onSelectionChanged: (s) => setState(() => _portal = s.first),
+                          ),
+                          if (_portal == LoginPortal.operator) ...[
+                            const SizedBox(height: 10),
+                            Text(
+                              'Operator sign-in only works if this email/username was registered as an operator.',
+                              style: TextStyle(fontSize: 11.5, height: 1.35, color: Colors.orange.shade200.withValues(alpha: 0.85)),
+                            ),
+                          ],
+                          const SizedBox(height: 18),
                           TextField(
-                            controller: _emailCtrl,
+                            controller: _identifierCtrl,
                             keyboardType: TextInputType.emailAddress,
                             decoration: const InputDecoration(
-                              labelText: 'Email',
-                              prefixIcon: Icon(Icons.mail_outline_rounded, size: 20),
+                              labelText: 'Email or username',
+                              hintText: 'you@company.com or jane_doe',
+                              prefixIcon: Icon(Icons.account_circle_outlined, size: 20),
                             ),
                           ),
                           const SizedBox(height: 14),
@@ -113,11 +152,12 @@ class _AuthViewState extends State<AuthView> with SingleTickerProviderStateMixin
                                     try {
                                       setState(() => _error = null);
                                       await context.read<AuthProvider>().signIn(
-                                            _emailCtrl.text.trim(),
-                                            _passwordCtrl.text.trim(),
+                                            identifier: _identifierCtrl.text.trim(),
+                                            password: _passwordCtrl.text,
+                                            portal: _portal,
                                           );
                                     } catch (e) {
-                                      setState(() => _error = e.toString());
+                                      setState(() => _error = readableSupabaseNetworkFailure(e));
                                     }
                                   },
                             child: Padding(
@@ -131,7 +171,12 @@ class _AuthViewState extends State<AuthView> with SingleTickerProviderStateMixin
                                   : const Text('Continue'),
                             ),
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 10),
+                          OutlinedButton(
+                            onPressed: auth.isLoading ? null : _openSignUp,
+                            child: const Text('Create an account'),
+                          ),
+                          const SizedBox(height: 10),
                           OutlinedButton(
                             onPressed: () => context.read<AuthProvider>().continueAsGuest(),
                             child: const Text('Guest'),

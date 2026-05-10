@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/incident_model.dart';
+import '../providers/auth_provider.dart';
 import '../providers/incident_provider.dart';
 import 'glass.dart';
 
@@ -159,22 +160,29 @@ class _AlertTileState extends State<_AlertTile> {
               ],
             ),
             const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: widget.incident.isFalsePositive
-                    ? null
-                    : () => context.read<IncidentProvider>().markFalsePositive(widget.incident.id),
-                child: Text(
-                  'False positive',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: widget.incident.isFalsePositive
-                        ? Colors.white.withValues(alpha: 0.28)
-                        : const Color(0xFFFFB74D),
+            Builder(
+              builder: (context) {
+                final auth = context.watch<AuthProvider>();
+                final show = auth.canReviewAlerts && !auth.isGuest;
+                if (!show) return const SizedBox.shrink();
+                return Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: widget.incident.isFalsePositive
+                        ? null
+                        : () => context.read<IncidentProvider>().markFalsePositive(widget.incident.id),
+                    child: Text(
+                      'False positive',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: widget.incident.isFalsePositive
+                            ? Colors.white.withValues(alpha: 0.28)
+                            : const Color(0xFFFFB74D),
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ],
         ),

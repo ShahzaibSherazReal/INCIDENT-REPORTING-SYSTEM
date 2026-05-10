@@ -130,6 +130,19 @@ class DatabaseService {
     await _client.from('incidents').update({'is_false_positive': true}).eq('id', incidentId);
   }
 
+  Future<void> validateOperatorIncident(String incidentId, {bool validated = true}) async {
+    try {
+      final url = Uri.parse('${AppConfig.backendBaseUrl}/incidents/$incidentId/operator-validate');
+      final response = await http.patch(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'operator_validated': validated}),
+      );
+      if (response.statusCode >= 200 && response.statusCode < 300) return;
+    } catch (_) {}
+    await _client.from('incidents').update({'operator_validated': validated}).eq('id', incidentId);
+  }
+
   Future<void> toggleCamera({
     required String cameraId,
     required bool isActive,

@@ -9,6 +9,7 @@ import '../widgets/glass.dart';
 import 'activity_history_view.dart';
 import 'landing_view.dart';
 import 'live_operations_view.dart';
+import 'operator_review_view.dart';
 import 'photo_analyze_view.dart';
 import 'realtime_device_view.dart';
 import 'video_analyze_view.dart';
@@ -32,72 +33,133 @@ class _MainShellState extends State<MainShell> {
     context.read<IncidentProvider>().refresh(silentErrors: false);
   }
 
+  List<NavigationRailDestination> _railDestinations(bool showReview) {
+    return [
+      const NavigationRailDestination(
+        icon: Icon(Icons.home_outlined),
+        selectedIcon: Icon(Icons.home_rounded),
+        label: Text('Home'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.grid_view_outlined),
+        selectedIcon: Icon(Icons.grid_view_rounded),
+        label: Text('Live'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.bolt_outlined),
+        selectedIcon: Icon(Icons.bolt_rounded),
+        label: Text('Realtime'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.movie_outlined),
+        selectedIcon: Icon(Icons.movie_rounded),
+        label: Text('Video'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.image_outlined),
+        selectedIcon: Icon(Icons.image_rounded),
+        label: Text('Photo'),
+      ),
+      const NavigationRailDestination(
+        icon: Icon(Icons.history_outlined),
+        selectedIcon: Icon(Icons.history_rounded),
+        label: Text('Activity'),
+      ),
+      if (showReview)
+        const NavigationRailDestination(
+          icon: Icon(Icons.fact_check_outlined),
+          selectedIcon: Icon(Icons.fact_check_rounded),
+          label: Text('Review'),
+        ),
+    ];
+  }
+
+  List<NavigationDestination> _bottomDestinations(bool showReview) {
+    return [
+      const NavigationDestination(
+        icon: Icon(Icons.home_outlined),
+        selectedIcon: Icon(Icons.home_rounded),
+        label: 'Home',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.grid_view_outlined),
+        selectedIcon: Icon(Icons.grid_view_rounded),
+        label: 'Live',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.bolt_outlined),
+        selectedIcon: Icon(Icons.bolt_rounded),
+        label: 'Realtime',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.movie_outlined),
+        selectedIcon: Icon(Icons.movie_rounded),
+        label: 'Video',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.image_outlined),
+        selectedIcon: Icon(Icons.image_rounded),
+        label: 'Photo',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.history_outlined),
+        selectedIcon: Icon(Icons.history_rounded),
+        label: 'Activity',
+      ),
+      if (showReview)
+        const NavigationDestination(
+          icon: Icon(Icons.fact_check_outlined),
+          selectedIcon: Icon(Icons.fact_check_rounded),
+          label: 'Review',
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthProvider>();
+    final showReviewTab = auth.canReviewAlerts && !auth.isGuest;
+    final maxIndex = showReviewTab ? 6 : 5;
+
+    final navIndex = _index.clamp(0, maxIndex);
+    if (navIndex != _index) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _index != navIndex) setState(() => _index = navIndex);
+      });
+    }
 
     final pages = <Widget>[
       const LandingView(),
       const LiveOperationsView(),
-      RealtimeDeviceView(active: _index == 2),
+      RealtimeDeviceView(active: navIndex == 2),
       const VideoAnalyzeView(),
       const PhotoAnalyzeView(),
       const ActivityHistoryView(),
+      if (showReviewTab) const OperatorReviewView(),
     ];
+
+    final rail = NavigationRail(
+      backgroundColor: Colors.black.withValues(alpha: 0.2),
+      selectedIndex: navIndex,
+      onDestinationSelected: _go,
+      labelType: NavigationRailLabelType.all,
+      leading: Padding(
+        padding: const EdgeInsets.only(bottom: 16, top: 8),
+        child: Icon(Icons.shield_outlined, color: Colors.white.withValues(alpha: 0.85)),
+      ),
+      destinations: _railDestinations(showReviewTab),
+    );
+
+    final body = IndexedStack(
+      index: navIndex,
+      children: pages,
+    );
+
+    final showAlertsDrawer = !wide(context) && (navIndex == 1 || navIndex == 2);
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth >= 900;
-
-        final rail = NavigationRail(
-          backgroundColor: Colors.black.withValues(alpha: 0.2),
-          selectedIndex: _index,
-          onDestinationSelected: _go,
-          labelType: NavigationRailLabelType.all,
-          leading: Padding(
-            padding: const EdgeInsets.only(bottom: 16, top: 8),
-            child: Icon(Icons.shield_outlined, color: Colors.white.withValues(alpha: 0.85)),
-          ),
-          destinations: const [
-            NavigationRailDestination(
-              icon: Icon(Icons.home_outlined),
-              selectedIcon: Icon(Icons.home_rounded),
-              label: Text('Home'),
-            ),
-            NavigationRailDestination(
-              icon: Icon(Icons.grid_view_outlined),
-              selectedIcon: Icon(Icons.grid_view_rounded),
-              label: Text('Live'),
-            ),
-            NavigationRailDestination(
-              icon: Icon(Icons.bolt_outlined),
-              selectedIcon: Icon(Icons.bolt_rounded),
-              label: Text('Realtime'),
-            ),
-            NavigationRailDestination(
-              icon: Icon(Icons.movie_outlined),
-              selectedIcon: Icon(Icons.movie_rounded),
-              label: Text('Video'),
-            ),
-            NavigationRailDestination(
-              icon: Icon(Icons.image_outlined),
-              selectedIcon: Icon(Icons.image_rounded),
-              label: Text('Photo'),
-            ),
-            NavigationRailDestination(
-              icon: Icon(Icons.history_outlined),
-              selectedIcon: Icon(Icons.history_rounded),
-              label: Text('Activity'),
-            ),
-          ],
-        );
-
-        final body = IndexedStack(
-          index: _index,
-          children: pages,
-        );
-
-        final showAlertsDrawer = !wide && (_index == 1 || _index == 2);
+        final wideLayout = constraints.maxWidth >= 900;
 
         return Scaffold(
           key: _scaffoldKey,
@@ -137,15 +199,29 @@ class _MainShellState extends State<MainShell> {
                 ),
               if (auth.profile != null)
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
                   child: Center(
-                    child: Text(
-                      auth.profile!.role,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.white.withValues(alpha: 0.55),
-                        fontWeight: FontWeight.w500,
-                      ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          auth.profile!.username ?? auth.profile!.email.split('@').first,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white.withValues(alpha: 0.82),
+                          ),
+                        ),
+                        Text(
+                          auth.profile!.role,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.white.withValues(alpha: 0.45),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
@@ -162,7 +238,7 @@ class _MainShellState extends State<MainShell> {
           ),
           body: GradientBackground(
             child: SafeArea(
-              child: wide
+              child: wideLayout
                   ? Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -188,49 +264,20 @@ class _MainShellState extends State<MainShell> {
                   ),
                 )
               : null,
-          bottomNavigationBar: wide
+          bottomNavigationBar: wideLayout
               ? null
               : NavigationBar(
                   height: 68,
                   backgroundColor: Colors.black.withValues(alpha: 0.35),
                   indicatorColor: const Color(0xFF3B9EFF).withValues(alpha: 0.28),
-                  selectedIndex: _index,
+                  selectedIndex: navIndex,
                   onDestinationSelected: _go,
-                  destinations: const [
-                    NavigationDestination(
-                      icon: Icon(Icons.home_outlined),
-                      selectedIcon: Icon(Icons.home_rounded),
-                      label: 'Home',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.grid_view_outlined),
-                      selectedIcon: Icon(Icons.grid_view_rounded),
-                      label: 'Live',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.bolt_outlined),
-                      selectedIcon: Icon(Icons.bolt_rounded),
-                      label: 'Realtime',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.movie_outlined),
-                      selectedIcon: Icon(Icons.movie_rounded),
-                      label: 'Video',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.image_outlined),
-                      selectedIcon: Icon(Icons.image_rounded),
-                      label: 'Photo',
-                    ),
-                    NavigationDestination(
-                      icon: Icon(Icons.history_outlined),
-                      selectedIcon: Icon(Icons.history_rounded),
-                      label: 'Activity',
-                    ),
-                  ],
+                  destinations: _bottomDestinations(showReviewTab),
                 ),
         );
       },
     );
   }
+
+  bool wide(BuildContext context) => MediaQuery.sizeOf(context).width >= 900;
 }

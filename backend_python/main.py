@@ -66,6 +66,10 @@ class FalsePositivePayload(BaseModel):
     is_false_positive: bool = True
 
 
+class OperatorValidatePayload(BaseModel):
+    operator_validated: bool = True
+
+
 class DetectionEvent(BaseModel):
     camera_id: str
     camera_name: str
@@ -413,6 +417,19 @@ async def mark_incident_false_positive(incident_id: str, payload: FalsePositiveP
         .execute()
     )
     return {"status": "ok", "id": incident_id, "is_false_positive": payload.is_false_positive}
+
+
+@app.patch("/incidents/{incident_id}/operator-validate")
+async def operator_validate_incident(incident_id: str, payload: OperatorValidatePayload) -> Dict[str, Any]:
+    if not state.supabase:
+        raise HTTPException(status_code=503, detail="Database not configured")
+    await asyncio.to_thread(
+        lambda: state.supabase.table("incidents")
+        .update({"operator_validated": payload.operator_validated})
+        .eq("id", incident_id)
+        .execute()
+    )
+    return {"status": "ok", "id": incident_id, "operator_validated": payload.operator_validated}
 
 
 @app.post("/cameras")

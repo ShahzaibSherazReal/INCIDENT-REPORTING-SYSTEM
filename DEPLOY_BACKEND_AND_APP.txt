@@ -100,6 +100,13 @@ PART C — PHONE PAR “BACKEND ON” NAHI — checklist
 
 [ ] Supabase keys BACKEND ke env mein sahi (anon key NAHI — service_role backend ke liye).
 
+[ ] Flutter signup error complete_signup / PGRST202?
+    Tumhari Supabase DB par repo migrations lagani hain (taake RPC ban jaye):
+    - Preferred: project folder me supabase CLI → link project → `supabase db push`
+    - Ya Dashboard → SQL Editor: pehle `supabase/migrations/0003_auth_users_roles_operator_review.sql`
+      poori run karo, phir `supabase/migrations/0004_complete_signup_rpc_postgrest.sql`
+      (0004 signup RPC ko refresh karti hai; PostgREST cache kabhi-kabhi reload hone tak 10–30s leta hai.)
+
 [ ] APK build karte waqt --dart-define=BACKEND_URL=https://... DIYA ho
     (purani APK mein purana localhost bake ho sakta hai — nayi build zaroori hai.)
 

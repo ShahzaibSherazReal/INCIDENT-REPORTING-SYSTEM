@@ -40,6 +40,11 @@ class IncidentProvider extends ChangeNotifier {
     await refresh(silentErrors: true);
   }
 
+  Future<void> validateOperatorIncident(String incidentId) async {
+    await _databaseService.validateOperatorIncident(incidentId);
+    await refresh(silentErrors: true);
+  }
+
   Future<List<IncidentModel>> fetchByDate({
     DateTime? from,
     DateTime? to,
