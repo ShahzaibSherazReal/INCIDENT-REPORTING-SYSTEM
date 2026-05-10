@@ -72,11 +72,12 @@ class AnalysisService {
         'Request timed out after ${timeout.inMinutes} minutes. '
         'Video analysis can take a long time — try a shorter clip or lower resolution.',
       );
-    } on http.ClientException {
+    } on http.ClientException catch (e) {
       throw Exception(
         'Cannot reach the backend at ${url.origin} (analyze). '
-        'Run start_backend.bat in backend_python (or uvicorn main:app --host 0.0.0.0 --port 8000), '
-        'open the Flutter web app via http://localhost (same host as API), then hard-refresh.',
+        'Check phone internet / Wi‑Fi; open ${url.origin}/docs in Chrome on the same device. '
+        'If that fails: DNS or firewall. If only the app fails: uninstall and reinstall after rebuilding '
+        '(ensure AndroidManifest includes INTERNET permission). Underlying: $e',
       );
     }
 

@@ -3,17 +3,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-/// Opens a full-screen live preview from **this** device's cameras (phone, laptop webcam in browser, etc.).
-/// If only one camera exists it starts immediately; otherwise the user picks which camera to use.
-Future<void> showDeviceCameraLive(BuildContext context) async {
-  final permitted = await _ensureCameraPermission();
+/// Permission + enumeration + optional picker dialog. Returns `null` if cancelled / denied / none.
+Future<CameraDescription?> pickDeviceCameraDescription(BuildContext context) async {
+  final permitted = await ensureDeviceCameraPermission();
   if (!permitted) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Camera permission is required for live preview.')),
       );
     }
-    return;
+    return null;
   }
 
   List<CameraDescription> cameras;
@@ -25,57 +24,46 @@ Future<void> showDeviceCameraLive(BuildContext context) async {
         SnackBar(content: Text('Could not access cameras: $e')),
       );
     }
-    return;
+    return null;
   }
 
-  if (!context.mounted) return;
+  if (!context.mounted) return null;
   if (cameras.isEmpty) {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('No cameras found on this device.')),
     );
-    return;
+    return null;
   }
 
-  final CameraDescription selected;
-  if (cameras.length == 1) {
-    selected = cameras.first;
-  } else {
-    final picked = await showDialog<CameraDescription>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Choose camera'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final c in cameras)
-                ListTile(
-                  leading: Icon(_iconForLens(c.lensDirection)),
-                  title: Text(_cameraTitle(c)),
-                  subtitle: c.name.isNotEmpty ? Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
-                  onTap: () => Navigator.of(ctx).pop(c),
-                ),
-            ],
-          ),
+  if (cameras.length == 1) return cameras.first;
+
+  final picked = await showDialog<CameraDescription>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Choose camera'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final c in cameras)
+              ListTile(
+                leading: Icon(iconForLensDirection(c.lensDirection)),
+                title: Text(deviceCameraDisplayLabel(c)),
+                subtitle: c.name.isNotEmpty ? Text(c.name, maxLines: 1, overflow: TextOverflow.ellipsis) : null,
+                onTap: () => Navigator.of(ctx).pop(c),
+              ),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
-        ],
       ),
-    );
-    if (picked == null || !context.mounted) return;
-    selected = picked;
-  }
-
-  await Navigator.of(context).push<void>(
-    MaterialPageRoute<void>(
-      fullscreenDialog: true,
-      builder: (_) => _DeviceCameraLiveScreen(camera: selected),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+      ],
     ),
   );
+  return picked;
 }
 
-Future<bool> _ensureCameraPermission() async {
+Future<bool> ensureDeviceCameraPermission() async {
   if (kIsWeb) return true;
   try {
     final status = await Permission.camera.request();
@@ -85,7 +73,7 @@ Future<bool> _ensureCameraPermission() async {
   }
 }
 
-IconData _iconForLens(CameraLensDirection d) {
+IconData iconForLensDirection(CameraLensDirection d) {
   switch (d) {
     case CameraLensDirection.front:
       return Icons.camera_front_rounded;
@@ -96,7 +84,7 @@ IconData _iconForLens(CameraLensDirection d) {
   }
 }
 
-String _cameraTitle(CameraDescription c) {
+String deviceCameraDisplayLabel(CameraDescription c) {
   final lens = switch (c.lensDirection) {
     CameraLensDirection.front => 'Front',
     CameraLensDirection.back => 'Back',
@@ -105,16 +93,30 @@ String _cameraTitle(CameraDescription c) {
   return '$lens camera';
 }
 
-class _DeviceCameraLiveScreen extends StatefulWidget {
-  const _DeviceCameraLiveScreen({required this.camera});
+/// Opens a full-screen live preview from **this** device's cameras (phone, laptop webcam in browser, etc.).
+Future<void> showDeviceCameraLive(BuildContext context) async {
+  final selected = await pickDeviceCameraDescription(context);
+  if (selected == null || !context.mounted) return;
+
+  await Navigator.of(context).push<void>(
+    MaterialPageRoute<void>(
+      fullscreenDialog: true,
+      builder: (_) => DeviceCameraLiveScreen(camera: selected),
+    ),
+  );
+}
+
+/// Full-screen preview (used by toolbar shortcut).
+class DeviceCameraLiveScreen extends StatefulWidget {
+  const DeviceCameraLiveScreen({super.key, required this.camera});
 
   final CameraDescription camera;
 
   @override
-  State<_DeviceCameraLiveScreen> createState() => _DeviceCameraLiveScreenState();
+  State<DeviceCameraLiveScreen> createState() => _DeviceCameraLiveScreenState();
 }
 
-class _DeviceCameraLiveScreenState extends State<_DeviceCameraLiveScreen> {
+class _DeviceCameraLiveScreenState extends State<DeviceCameraLiveScreen> {
   CameraController? _controller;
   bool _ready = false;
   String? _error;

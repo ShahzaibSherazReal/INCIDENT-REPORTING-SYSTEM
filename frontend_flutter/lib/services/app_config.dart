@@ -6,18 +6,17 @@ class AppConfig {
 
   /// FastAPI base URL (no trailing slash).
   ///
-  /// Default [http://localhost:8000] — Chrome/web ke liye localhost theek hai.
-  ///
-  /// **Phone / release APK:** deploy backend (Railway, Fly.io, VPS, etc.) aur build ke waqt:
-  /// `flutter build apk --release --dart-define=BACKEND_URL=https://your-api.example.com`
-  ///
-  /// Same Wi‑Fi par PC backend test: `--dart-define=BACKEND_URL=http://192.168.x.x:8000`
-  /// (phone aur PC same network; backend `--host 0.0.0.0` se chalao).
+  /// Default: deployed Railway API. Local backend ke liye:
+  /// `flutter run --dart-define=BACKEND_URL=http://localhost:8000`
   static String get backendBaseUrl {
     const raw = String.fromEnvironment(
       'BACKEND_URL',
-      defaultValue: 'http://localhost:8000',
+      defaultValue: 'https://incident-reporting-system-production.up.railway.app',
     );
-    return raw.endsWith('/') ? raw.substring(0, raw.length - 1) : raw;
+    var base = raw.trim().replaceAll(RegExp(r'\s+'), '');
+    if (base.isEmpty) {
+      base = 'https://incident-reporting-system-production.up.railway.app';
+    }
+    return base.endsWith('/') ? base.substring(0, base.length - 1) : base;
   }
 }

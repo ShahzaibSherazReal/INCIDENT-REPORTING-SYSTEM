@@ -6,7 +6,6 @@ import '../providers/incident_provider.dart';
 import '../widgets/alert_sidebar.dart';
 import '../widgets/evidence_logs_table.dart';
 import '../widgets/live_monitoring_grid.dart';
-import '../widgets/device_camera_live.dart';
 import '../widgets/stream_toolbar.dart';
 
 /// Live streams, evidence table, and real-time alerts (previous dashboard core).
@@ -28,7 +27,7 @@ class _LiveOperationsViewState extends State<LiveOperationsView> {
     });
   }
 
-  Future<void> _openDeviceCamera() => showDeviceCameraLive(context);
+  Future<void> _openDeviceCamera() => context.read<CameraProvider>().addLocalDeviceFeedFromPicker(context);
 
   @override
   Widget build(BuildContext context) {

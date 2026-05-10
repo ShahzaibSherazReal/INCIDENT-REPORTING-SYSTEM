@@ -56,7 +56,7 @@ class StreamToolbar extends StatelessWidget {
           ),
         ),
         Tooltip(
-          message: 'Live preview from this phone or laptop camera. Use Add stream for API server cameras.',
+          message: 'Adds this device’s camera as a tile in the live grid (same as Add stream → This device’s camera).',
           child: Material(
             color: Colors.transparent,
             child: InkWell(
