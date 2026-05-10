@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -7,6 +9,8 @@ import 'package:shimmer/shimmer.dart';
 import '../models/camera_model.dart';
 import '../models/local_device_feed.dart';
 import '../providers/camera_provider.dart';
+import '../services/app_config.dart';
+import 'device_camera_live.dart';
 import 'glass.dart';
 
 enum _AddStreamMode { url, device }
@@ -159,8 +163,9 @@ Future<void> showAddCameraSheet(BuildContext context) async {
                         ),
                       ] else ...[
                         Text(
-                          'Adds a live preview tile from this phone or laptop. It stays on the device only '
-                          '(not sent as a stream URL to the API). Use the URL tab for Railway / server feeds.',
+                          'Adds a preview tile from this phone or laptop. A backend camera row is created '
+                          '(device://…) so you can turn AI·on and send JPEG snapshots for detection. '
+                          'Web preview only — no uploads from the browser camera.',
                           style: TextStyle(color: Colors.white.withValues(alpha: 0.48), fontSize: 13, height: 1.35),
                         ),
                         const SizedBox(height: 20),
@@ -201,7 +206,7 @@ class LiveMonitoringGrid extends StatelessWidget {
         child: GridView.builder(
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 2,
-            childAspectRatio: 16 / 10,
+            childAspectRatio: 16 / 12,
             crossAxisSpacing: 10,
             mainAxisSpacing: 10,
           ),
@@ -261,7 +266,7 @@ class LiveMonitoringGrid extends StatelessWidget {
             child: GridView.builder(
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                 crossAxisCount: 2,
-                childAspectRatio: 16 / 10,
+                childAspectRatio: 16 / 12,
                 crossAxisSpacing: 10,
                 mainAxisSpacing: 10,
               ),
@@ -411,6 +416,43 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
   CameraController? _controller;
   bool _ready = false;
   bool _previewOn = true;
+  bool _detectionOn = true;
+  String? _initError;
+  Timer? _frameTimer;
+  bool _uploadBusy = false;
+
+  void _cancelFrameUpload() {
+    _frameTimer?.cancel();
+    _frameTimer = null;
+  }
+
+  void _scheduleFrameUpload() {
+    _cancelFrameUpload();
+    final backendId = widget.feed.backendCameraId;
+    if (backendId == null || !_detectionOn || !_previewOn || kIsWeb) return;
+    _frameTimer = Timer.periodic(
+      Duration(milliseconds: AppConfig.deviceFrameUploadIntervalMs),
+      (_) => _captureAndUpload(),
+    );
+  }
+
+  Future<void> _captureAndUpload() async {
+    if (!mounted || _uploadBusy) return;
+    final c = _controller;
+    final backendId = widget.feed.backendCameraId;
+    if (c == null || backendId == null || !c.value.isInitialized || !_detectionOn || !_previewOn) return;
+    _uploadBusy = true;
+    try {
+      final xfile = await c.takePicture();
+      final bytes = await xfile.readAsBytes();
+      if (!mounted) return;
+      await context.read<CameraProvider>().uploadDeviceCameraFrame(backendId, bytes);
+    } catch (_) {
+      // Network / decode / lock contention — avoid crashing the preview loop.
+    } finally {
+      _uploadBusy = false;
+    }
+  }
 
   @override
   void initState() {
@@ -419,6 +461,7 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
   }
 
   Future<void> _startPreview() async {
+    _initError = null;
     final c = CameraController(
       widget.feed.camera,
       kIsWeb ? ResolutionPreset.medium : ResolutionPreset.high,
@@ -432,20 +475,31 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
       }
       setState(() {
         _controller = c;
-        _ready = true;
+        _ready = c.value.isInitialized;
       });
-    } catch (_) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scheduleFrameUpload();
+      });
+    } catch (e) {
       await c.dispose();
-      if (mounted) setState(() => _ready = false);
+      if (mounted) {
+        setState(() {
+          _ready = false;
+          _controller = null;
+          _initError = '$e';
+        });
+      }
     }
   }
 
   Future<void> _stopPreview() async {
+    _cancelFrameUpload();
     await _controller?.dispose();
     if (!mounted) return;
     setState(() {
       _controller = null;
       _ready = false;
+      _initError = null;
     });
   }
 
@@ -458,8 +512,133 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
     }
   }
 
+  bool get _canExpandLocalPreview =>
+      _previewOn &&
+      _controller != null &&
+      _ready &&
+      _controller!.value.isInitialized;
+
+  Future<void> _openFullscreenPreview() async {
+    if (!_canExpandLocalPreview) return;
+    final c = _controller!;
+    _cancelFrameUpload();
+    setState(() {
+      _controller = null;
+      _ready = false;
+    });
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => DeviceCameraLiveScreen.borrow(c),
+      ),
+    );
+    if (!mounted) return;
+    if (!_previewOn) {
+      await c.dispose();
+      return;
+    }
+    if (c.value.isInitialized) {
+      setState(() {
+        _controller = c;
+        _ready = true;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scheduleFrameUpload();
+      });
+    } else {
+      await _startPreview();
+    }
+  }
+
+  Widget _buildLocalPreviewArea() {
+    if (!_previewOn) {
+      return ColoredBox(
+        color: Colors.black.withValues(alpha: 0.35),
+        child: Center(
+          child: Text(
+            'Off',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.35),
+              fontWeight: FontWeight.w600,
+              fontSize: 11,
+            ),
+          ),
+        ),
+      );
+    }
+    if (_controller == null || !_ready) {
+      return ColoredBox(
+        color: Colors.black.withValues(alpha: 0.35),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+                ),
+                if (_initError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _initError!,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.orange.shade200, fontSize: 10),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final c = _controller!;
+    if (!c.value.isInitialized) {
+      return ColoredBox(
+        color: Colors.black.withValues(alpha: 0.35),
+        child: const Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+          ),
+        ),
+      );
+    }
+
+    final previewSize = c.value.previewSize;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SizedBox(
+          width: constraints.maxWidth,
+          height: constraints.maxHeight,
+          child: ClipRect(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              clipBehavior: Clip.hardEdge,
+              alignment: Alignment.center,
+              child: previewSize != null
+                  ? SizedBox(
+                      width: previewSize.height,
+                      height: previewSize.width,
+                      child: CameraPreview(c),
+                    )
+                  : AspectRatio(
+                      aspectRatio: c.value.aspectRatio,
+                      child: CameraPreview(c),
+                    ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void dispose() {
+    _cancelFrameUpload();
     _controller?.dispose();
     super.dispose();
   }
@@ -475,71 +654,126 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
         color: Colors.white.withValues(alpha: 0.05),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(8, 6, 6, 8),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.feed.displayName,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+            SizedBox(
+              height: 34,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Tooltip(
+                      message: widget.feed.backendCameraId != null
+                          ? 'This device — JPEG frames sent to the backend for detection (~every '
+                              '${AppConfig.deviceFrameUploadIntervalMs ~/ 1000}s when AI is on). Tap preview for fullscreen.'
+                          : 'This device — AI needs backend registration (check connection when adding). Tap preview for fullscreen.',
+                      child: Text(
+                        '${widget.feed.displayName} · local',
+                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      Text(
-                        'This device · local preview',
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.38), fontSize: 11),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-                Switch.adaptive(
-                  value: _previewOn,
-                  activeThumbColor: const Color(0xFF5BB0FF),
-                  onChanged: (v) => _setPreviewOn(v),
-                ),
-                IconButton(
-                  icon: Icon(Icons.close_rounded, size: 20, color: Colors.white.withValues(alpha: 0.65)),
-                  tooltip: 'Remove',
-                  onPressed: widget.onRemove,
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: !_previewOn || !_ready || _controller == null
-                    ? ColoredBox(
-                        color: Colors.black.withValues(alpha: 0.35),
-                        child: Center(
-                          child: Text(
-                            _previewOn ? 'Starting…' : 'Off',
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: _previewOn ? 0.45 : 0.35),
-                              fontWeight: FontWeight.w600,
-                              fontSize: 11,
+                  if (widget.feed.backendCameraId != null && !kIsWeb)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          onTap: () {
+                            setState(() => _detectionOn = !_detectionOn);
+                            if (_detectionOn) {
+                              _scheduleFrameUpload();
+                            } else {
+                              _cancelFrameUpload();
+                            }
+                          },
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: _detectionOn
+                                  ? const Color(0xFF4CAF50).withValues(alpha: 0.22)
+                                  : Colors.white.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+                            ),
+                            child: Text(
+                              _detectionOn ? 'AI·on' : 'AI·off',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white.withValues(alpha: _detectionOn ? 0.92 : 0.45),
+                              ),
                             ),
                           ),
                         ),
-                      )
-                    : ClipRect(
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          alignment: Alignment.center,
-                          clipBehavior: Clip.hardEdge,
-                          child: AspectRatio(
-                            aspectRatio: _controller!.value.aspectRatio,
-                            child: CameraPreview(_controller!),
-                          ),
-                        ),
                       ),
+                    ),
+                  SizedBox(
+                    height: 28,
+                    width: 46,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.center,
+                      child: Switch.adaptive(
+                        value: _previewOn,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        activeThumbColor: const Color(0xFF5BB0FF),
+                        onChanged: (v) => _setPreviewOn(v),
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(Icons.close_rounded, size: 17, color: Colors.white.withValues(alpha: 0.65)),
+                    tooltip: 'Remove',
+                    onPressed: widget.onRemove,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: _canExpandLocalPreview
+                    ? GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _openFullscreenPreview,
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            _buildLocalPreviewArea(),
+                            Positioned(
+                              right: 5,
+                              bottom: 5,
+                              child: IgnorePointer(
+                                child: DecoratedBox(
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.48),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(5),
+                                    child: Icon(
+                                      Icons.fullscreen_rounded,
+                                      size: 17,
+                                      color: Colors.white.withValues(alpha: 0.9),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : _buildLocalPreviewArea(),
               ),
             ),
           ],
@@ -591,35 +825,53 @@ class _CameraCardState extends State<_CameraCard> {
           color: Colors.white.withValues(alpha: isHovering ? 0.07 : 0.04),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(12),
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      widget.camera.name,
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+              SizedBox(
+                height: 34,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        widget.camera.name,
+                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
+                    SizedBox(
+                      height: 28,
+                      width: 46,
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.center,
+                        child: Switch.adaptive(
+                          value: widget.camera.isActive,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          activeThumbColor: const Color(0xFF5BB0FF),
+                          onChanged: (value) => widget.onToggle(value),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(
+                height: 26,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: Text(
+                    widget.camera.streamUrl,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.38), fontSize: 10, height: 1.15),
                   ),
-                  Switch.adaptive(
-                    value: widget.camera.isActive,
-                    activeThumbColor: const Color(0xFF5BB0FF),
-                    onChanged: (value) => widget.onToggle(value),
-                  ),
-                ],
+                ),
               ),
               const SizedBox(height: 4),
-              Text(
-                widget.camera.streamUrl,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.38), fontSize: 11),
-              ),
-              const SizedBox(height: 8),
               Expanded(
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 220),

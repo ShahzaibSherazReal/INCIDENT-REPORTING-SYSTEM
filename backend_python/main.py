@@ -116,6 +116,8 @@ class AppState:
         self.camera_tasks: Dict[str, asyncio.Task] = {}
         self.ws_manager = WebSocketManager()
         self.model_labels: Dict[str, List[str]] = defaultdict(list)
+        # Last loop time for POST /cameras/{id}/device-frame rate limiting (per camera_id).
+        self.device_frame_last_ts: Dict[str, float] = {}
 
 
 state = AppState()
@@ -199,6 +201,53 @@ async def insert_incident(payload: Dict[str, Any]) -> None:
     await asyncio.to_thread(lambda: state.supabase.table("incidents").insert(payload).execute())
 
 
+async def dispatch_detections_from_frame(camera_id: str, camera_name: str, frame) -> None:
+    """Run all loaded models on one BGR frame; persist incidents and WS broadcast (same as live stream)."""
+    for model_name, model in state.models.items():
+        results = await run_yolo_inference(model, frame)
+        if not results:
+            continue
+
+        prediction = results[0]
+        boxes = getattr(prediction, "boxes", [])
+        for box in boxes:
+            conf = float(box.conf[0].item())
+            if conf < CONFIDENCE_THRESHOLD:
+                continue
+
+            class_id = int(box.cls[0].item())
+            label_map = prediction.names
+            raw_label = label_map.get(class_id, "accident")
+            incident_type = map_incident_type(raw_label)
+            xyxy = box.xyxy[0].tolist()
+            incident_id = str(uuid.uuid4())
+            snapshot_url = await persist_snapshot(camera_id, frame, incident_id)
+
+            incident_payload = {
+                "id": incident_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "camera_id": camera_id,
+                "incident_type": incident_type,
+                "confidence_score": round(conf, 4),
+                "snapshot_url": snapshot_url,
+                "is_false_positive": False,
+            }
+
+            await insert_incident(incident_payload)
+
+            event = DetectionEvent(
+                camera_id=camera_id,
+                camera_name=camera_name,
+                incident_type=incident_type,
+                confidence_score=round(conf, 4),
+                snapshot_url=snapshot_url,
+                timestamp=datetime.now(timezone.utc),
+                bbox=[round(v, 2) for v in xyxy],
+                model_name=model_name,
+            )
+            await state.ws_manager.broadcast({"type": "incident_detected", "payload": event.model_dump(mode="json")})
+
+
 async def process_camera_stream(camera_id: str) -> None:
     min_interval = 1.0 / PROCESS_FPS
     last_processed = 0.0
@@ -232,51 +281,7 @@ async def process_camera_stream(camera_id: str) -> None:
                     continue
                 last_processed = now
 
-                for model_name, model in state.models.items():
-                    results = await run_yolo_inference(model, frame)
-                    if not results:
-                        continue
-
-                    prediction = results[0]
-                    boxes = getattr(prediction, "boxes", [])
-                    for box in boxes:
-                        conf = float(box.conf[0].item())
-                        if conf < CONFIDENCE_THRESHOLD:
-                            continue
-
-                        class_id = int(box.cls[0].item())
-                        label_map = prediction.names
-                        raw_label = label_map.get(class_id, "accident")
-                        incident_type = map_incident_type(raw_label)
-                        xyxy = box.xyxy[0].tolist()
-                        incident_id = str(uuid.uuid4())
-                        snapshot_url = await persist_snapshot(camera_id, frame, incident_id)
-
-                        incident_payload = {
-                            "id": incident_id,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                            "camera_id": camera_id,
-                            "incident_type": incident_type,
-                            "confidence_score": round(conf, 4),
-                            "snapshot_url": snapshot_url,
-                            "is_false_positive": False,
-                        }
-
-                        await insert_incident(incident_payload)
-
-                        event = DetectionEvent(
-                            camera_id=camera_id,
-                            camera_name=camera["name"],
-                            incident_type=incident_type,
-                            confidence_score=round(conf, 4),
-                            snapshot_url=snapshot_url,
-                            timestamp=datetime.now(timezone.utc),
-                            bbox=[round(v, 2) for v in xyxy],
-                            model_name=model_name,
-                        )
-                        await state.ws_manager.broadcast(
-                            {"type": "incident_detected", "payload": event.model_dump(mode="json")}
-                        )
+                await dispatch_detections_from_frame(camera_id, camera["name"], frame)
         finally:
             capture.release()
             await state.ws_manager.broadcast({"camera_id": camera_id, "status": "reconnecting"})
@@ -403,6 +408,34 @@ async def delete_camera(camera_id: str) -> Dict[str, str]:
     if state.supabase:
         await asyncio.to_thread(lambda: state.supabase.table("cameras").delete().eq("id", camera_id).execute())
     return {"status": "deleted"}
+
+
+@app.post("/cameras/{camera_id}/device-frame")
+async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
+    """JPEG frame from a mobile/local preview; must be a camera registered with stream_url device://…"""
+    cam = state.cameras.get(camera_id)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    stream_url = str(cam.get("stream_url") or "")
+    if not stream_url.startswith("device://"):
+        raise HTTPException(status_code=400, detail="Camera is not configured for device frame ingest")
+
+    loop = asyncio.get_event_loop()
+    now = loop.time()
+    min_interval = 1.0 / max(PROCESS_FPS, 0.25)
+    last = state.device_frame_last_ts.get(camera_id, 0.0)
+    if now - last < min_interval:
+        return {"status": "throttled", "skipped": True}
+
+    raw = await file.read()
+    buf = np.frombuffer(raw, dtype=np.uint8)
+    frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+
+    state.device_frame_last_ts[camera_id] = now
+    await dispatch_detections_from_frame(camera_id, cam["name"], frame)
+    return {"status": "ok"}
 
 
 @app.post("/cameras/{camera_id}/toggle")

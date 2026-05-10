@@ -32,7 +32,7 @@ class DatabaseService {
     return list.map((e) => IncidentModel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
   }
 
-  Future<void> createCameraOnBackend({
+  Future<String> createCameraOnBackend({
     required String name,
     required String streamUrl,
     bool isActive = true,
@@ -50,6 +50,30 @@ class DatabaseService {
     if (response.statusCode >= 300) {
       throw Exception('Create camera failed: ${response.statusCode} ${response.body}');
     }
+    final map = jsonDecode(response.body) as Map<String, dynamic>;
+    final id = map['id']?.toString();
+    if (id == null || id.isEmpty) {
+      throw Exception('Create camera response missing id');
+    }
+    return id;
+  }
+
+  /// Sends one JPEG for server-side detection (live phone camera).
+  Future<Map<String, dynamic>> uploadDeviceCameraFrame({
+    required String cameraId,
+    required List<int> imageBytes,
+  }) async {
+    final url = Uri.parse('${AppConfig.backendBaseUrl}/cameras/$cameraId/device-frame');
+    final request = http.MultipartRequest('POST', url)
+      ..files.add(
+        http.MultipartFile.fromBytes('file', imageBytes, filename: 'frame.jpg'),
+      );
+    final streamed = await request.send().timeout(const Duration(seconds: 90));
+    final body = await streamed.stream.bytesToString().timeout(const Duration(seconds: 90));
+    if (streamed.statusCode >= 300) {
+      throw Exception('device-frame ${streamed.statusCode}: $body');
+    }
+    return Map<String, dynamic>.from(jsonDecode(body) as Map);
   }
 
   Future<List<CameraModel>> fetchCameras() async {

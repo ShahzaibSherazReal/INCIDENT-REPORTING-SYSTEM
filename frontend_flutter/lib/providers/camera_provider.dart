@@ -21,11 +21,15 @@ class CameraProvider extends ChangeNotifier {
     loadError = null;
     notifyListeners();
     try {
-      cameras = await _databaseService.fetchCamerasFromBackend();
+      cameras = (await _databaseService.fetchCamerasFromBackend())
+          .where((c) => !c.streamUrl.startsWith('device://'))
+          .toList();
     } catch (e) {
       loadError = e.toString();
       try {
-        cameras = await _databaseService.fetchCameras();
+        cameras = (await _databaseService.fetchCameras())
+            .where((c) => !c.streamUrl.startsWith('device://'))
+            .toList();
       } catch (_) {
         cameras = [];
       }
@@ -47,15 +51,37 @@ class CameraProvider extends ChangeNotifier {
     await loadCameras();
   }
 
-  /// Picks this device's camera (auto if one, dialog if many) and adds a grid tile (not saved on API).
+  Future<void> uploadDeviceCameraFrame(String backendCameraId, List<int> jpegBytes) async {
+    await _databaseService.uploadDeviceCameraFrame(cameraId: backendCameraId, imageBytes: jpegBytes);
+  }
+
+  /// Picks this device's camera (auto if one, dialog if many) and adds a grid tile.
+  /// Registers `device://…` on the backend so frames can be analyzed without a stream URL.
   Future<void> addLocalDeviceFeedFromPicker(BuildContext context) async {
     final selected = await pickDeviceCameraDescription(context);
     if (selected == null || !context.mounted) return;
+    final feedId = 'local-${DateTime.now().millisecondsSinceEpoch}';
+    final displayName = deviceCameraDisplayLabel(selected);
+    String? backendCameraId;
+    try {
+      backendCameraId = await _databaseService.createCameraOnBackend(
+        name: displayName,
+        streamUrl: 'device://$feedId',
+        isActive: false,
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Live AI unavailable (camera not registered): $e')),
+        );
+      }
+    }
     localDeviceFeeds.add(
       LocalDeviceFeed(
-        id: 'local-${DateTime.now().millisecondsSinceEpoch}',
-        displayName: deviceCameraDisplayLabel(selected),
+        id: feedId,
+        displayName: displayName,
         camera: selected,
+        backendCameraId: backendCameraId,
       ),
     );
     notifyListeners();

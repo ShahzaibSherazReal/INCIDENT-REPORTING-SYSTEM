@@ -101,16 +101,32 @@ Future<void> showDeviceCameraLive(BuildContext context) async {
   await Navigator.of(context).push<void>(
     MaterialPageRoute<void>(
       fullscreenDialog: true,
-      builder: (_) => DeviceCameraLiveScreen(camera: selected),
+      builder: (_) => DeviceCameraLiveScreen.fromLens(selected),
     ),
   );
 }
 
-/// Full-screen preview (used by toolbar shortcut).
+/// Full-screen preview: either a **new** controller from [CameraDescription], or **borrow** an existing one
+/// (same hardware session — avoids black screen / glitch when expanding from the live grid).
 class DeviceCameraLiveScreen extends StatefulWidget {
-  const DeviceCameraLiveScreen({super.key, required this.camera});
+  const DeviceCameraLiveScreen._({
+    super.key,
+    this.camera,
+    this.borrowedController,
+  }) : assert(
+          (camera != null && borrowedController == null) || (camera == null && borrowedController != null),
+        );
 
-  final CameraDescription camera;
+  factory DeviceCameraLiveScreen.fromLens(CameraDescription camera) {
+    return DeviceCameraLiveScreen._(camera: camera);
+  }
+
+  factory DeviceCameraLiveScreen.borrow(CameraController borrowedController) {
+    return DeviceCameraLiveScreen._(borrowedController: borrowedController);
+  }
+
+  final CameraDescription? camera;
+  final CameraController? borrowedController;
 
   @override
   State<DeviceCameraLiveScreen> createState() => _DeviceCameraLiveScreenState();
@@ -120,16 +136,30 @@ class _DeviceCameraLiveScreenState extends State<DeviceCameraLiveScreen> {
   CameraController? _controller;
   bool _ready = false;
   String? _error;
+  late final bool _ownsController;
 
   @override
   void initState() {
     super.initState();
-    _init();
+    final borrowed = widget.borrowedController;
+    if (borrowed != null) {
+      _ownsController = false;
+      _controller = borrowed;
+      _ready = borrowed.value.isInitialized;
+      if (!_ready) {
+        _error = 'Camera not ready.';
+      }
+    } else {
+      _ownsController = true;
+      _initFromLens();
+    }
   }
 
-  Future<void> _init() async {
+  Future<void> _initFromLens() async {
+    final desc = widget.camera;
+    if (desc == null) return;
     final controller = CameraController(
-      widget.camera,
+      desc,
       kIsWeb ? ResolutionPreset.medium : ResolutionPreset.high,
       enableAudio: false,
     );
@@ -154,8 +184,33 @@ class _DeviceCameraLiveScreenState extends State<DeviceCameraLiveScreen> {
 
   @override
   void dispose() {
-    _controller?.dispose();
+    if (_ownsController) {
+      _controller?.dispose();
+    }
     super.dispose();
+  }
+
+  Widget _previewLayer(CameraController c) {
+    final previewSize = c.value.previewSize;
+    return SizedBox.expand(
+      child: ClipRect(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          alignment: Alignment.center,
+          clipBehavior: Clip.hardEdge,
+          child: previewSize != null
+              ? SizedBox(
+                  width: previewSize.height,
+                  height: previewSize.width,
+                  child: CameraPreview(c),
+                )
+              : AspectRatio(
+                  aspectRatio: c.value.aspectRatio,
+                  child: CameraPreview(c),
+                ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -187,19 +242,7 @@ class _DeviceCameraLiveScreenState extends State<DeviceCameraLiveScreen> {
               : Stack(
                   fit: StackFit.expand,
                   children: [
-                    SizedBox.expand(
-                      child: ClipRect(
-                        child: FittedBox(
-                          fit: BoxFit.cover,
-                          alignment: Alignment.center,
-                          clipBehavior: Clip.hardEdge,
-                          child: AspectRatio(
-                            aspectRatio: _controller!.value.aspectRatio,
-                            child: CameraPreview(_controller!),
-                          ),
-                        ),
-                      ),
-                    ),
+                    _previewLayer(_controller!),
                     SafeArea(
                       child: Align(
                         alignment: Alignment.topLeft,

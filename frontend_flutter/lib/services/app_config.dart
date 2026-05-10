@@ -19,4 +19,7 @@ class AppConfig {
     }
     return base.endsWith('/') ? base.substring(0, base.length - 1) : base;
   }
+
+  /// Interval between JPEG uploads from this device’s camera preview (live AI).
+  static const int deviceFrameUploadIntervalMs = 800;
 }
