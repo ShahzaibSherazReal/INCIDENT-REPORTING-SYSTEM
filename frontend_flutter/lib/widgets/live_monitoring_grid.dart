@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
@@ -430,6 +430,9 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
     _cancelFrameUpload();
     final backendId = widget.feed.backendCameraId;
     if (backendId == null || !_detectionOn || !_previewOn || kIsWeb) return;
+    Timer(const Duration(milliseconds: 400), () {
+      if (mounted) _captureAndUpload();
+    });
     _frameTimer = Timer.periodic(
       Duration(milliseconds: AppConfig.deviceFrameUploadIntervalMs),
       (_) => _captureAndUpload(),
@@ -442,14 +445,28 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
     final backendId = widget.feed.backendCameraId;
     if (c == null || backendId == null || !c.value.isInitialized || !_detectionOn || !_previewOn) return;
     _uploadBusy = true;
+    var pausedPreview = false;
     try {
+      try {
+        await c.pausePreview();
+        pausedPreview = true;
+      } catch (_) {
+        // Some profiles ignore pause; still try capture.
+      }
       final xfile = await c.takePicture();
       final bytes = await xfile.readAsBytes();
       if (!mounted) return;
       await context.read<CameraProvider>().uploadDeviceCameraFrame(backendId, bytes);
-    } catch (_) {
-      // Network / decode / lock contention — avoid crashing the preview loop.
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('[device-frame upload] $e');
+      }
     } finally {
+      if (pausedPreview) {
+        try {
+          await c.resumePreview();
+        } catch (_) {}
+      }
       _uploadBusy = false;
     }
   }
@@ -464,7 +481,8 @@ class _LocalDeviceCameraCardState extends State<_LocalDeviceCameraCard> {
     _initError = null;
     final c = CameraController(
       widget.feed.camera,
-      kIsWeb ? ResolutionPreset.medium : ResolutionPreset.high,
+      // Medium reduces Android capture failures while preview runs and is enough for YOLO.
+      ResolutionPreset.medium,
       enableAudio: false,
     );
     try {

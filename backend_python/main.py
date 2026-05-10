@@ -38,6 +38,12 @@ SUPABASE_SNAPSHOT_BUCKET = os.getenv("SUPABASE_SNAPSHOT_BUCKET", "incident-snaps
 BACKEND_PUBLIC_URL = os.getenv("BACKEND_PUBLIC_URL", "http://localhost:8000").rstrip("/")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.55"))
 PROCESS_FPS = float(os.getenv("PROCESS_FPS", "2.5"))
+# Phone JPEG snapshots: override via DEVICE_FRAME_CONFIDENCE_THRESHOLD; else cap global threshold at 0.45.
+_dfc_env = os.getenv("DEVICE_FRAME_CONFIDENCE_THRESHOLD")
+if _dfc_env not in (None, ""):
+    DEVICE_FRAME_CONFIDENCE = float(_dfc_env)
+else:
+    DEVICE_FRAME_CONFIDENCE = min(CONFIDENCE_THRESHOLD, 0.45)
 
 
 class CameraCreate(BaseModel):
@@ -197,12 +203,48 @@ async def persist_snapshot(camera_id: str, frame, incident_id: str) -> str:
 
 async def insert_incident(payload: Dict[str, Any]) -> None:
     if not state.supabase:
+        logger.warning("insert_incident skipped: Supabase not configured")
         return
-    await asyncio.to_thread(lambda: state.supabase.table("incidents").insert(payload).execute())
+    try:
+        await asyncio.to_thread(lambda: state.supabase.table("incidents").insert(payload).execute())
+    except Exception:
+        logger.exception(
+            "insert_incident failed (camera_id=%s type=%s)",
+            payload.get("camera_id"),
+            payload.get("incident_type"),
+        )
 
 
-async def dispatch_detections_from_frame(camera_id: str, camera_name: str, frame) -> None:
+async def resolve_camera(camera_id: str) -> Optional[Dict[str, Any]]:
+    """In-memory registry, or load one row from Supabase (needed when multiple Railway replicas differ)."""
+    cached = state.cameras.get(camera_id)
+    if cached:
+        return cached
+    if not state.supabase:
+        return None
+
+    def _fetch() -> List[Dict[str, Any]]:
+        resp = state.supabase.table("cameras").select("*").eq("id", camera_id).limit(1).execute()
+        return resp.data or []
+
+    rows = await asyncio.to_thread(_fetch)
+    if not rows:
+        return None
+    cam = dict(rows[0])
+    state.cameras[camera_id] = cam
+    return cam
+
+
+async def dispatch_detections_from_frame(
+    camera_id: str,
+    camera_name: str,
+    frame,
+    *,
+    confidence_threshold: Optional[float] = None,
+) -> int:
     """Run all loaded models on one BGR frame; persist incidents and WS broadcast (same as live stream)."""
+    thresh = CONFIDENCE_THRESHOLD if confidence_threshold is None else confidence_threshold
+    emitted = 0
     for model_name, model in state.models.items():
         results = await run_yolo_inference(model, frame)
         if not results:
@@ -212,7 +254,7 @@ async def dispatch_detections_from_frame(camera_id: str, camera_name: str, frame
         boxes = getattr(prediction, "boxes", [])
         for box in boxes:
             conf = float(box.conf[0].item())
-            if conf < CONFIDENCE_THRESHOLD:
+            if conf < thresh:
                 continue
 
             class_id = int(box.cls[0].item())
@@ -246,6 +288,8 @@ async def dispatch_detections_from_frame(camera_id: str, camera_name: str, frame
                 model_name=model_name,
             )
             await state.ws_manager.broadcast({"type": "incident_detected", "payload": event.model_dump(mode="json")})
+            emitted += 1
+    return emitted
 
 
 async def process_camera_stream(camera_id: str) -> None:
@@ -413,8 +457,13 @@ async def delete_camera(camera_id: str) -> Dict[str, str]:
 @app.post("/cameras/{camera_id}/device-frame")
 async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> Dict[str, Any]:
     """JPEG frame from a mobile/local preview; must be a camera registered with stream_url device://…"""
-    cam = state.cameras.get(camera_id)
+    raw = await file.read()
+    if len(raw) < 64:
+        raise HTTPException(status_code=400, detail="Empty or invalid image upload")
+
+    cam = await resolve_camera(camera_id)
     if not cam:
+        logger.warning("device-frame: unknown camera_id=%s (not in memory or DB)", camera_id)
         raise HTTPException(status_code=404, detail="Camera not found")
     stream_url = str(cam.get("stream_url") or "")
     if not stream_url.startswith("device://"):
@@ -427,15 +476,26 @@ async def ingest_device_frame(camera_id: str, file: UploadFile = File(...)) -> D
     if now - last < min_interval:
         return {"status": "throttled", "skipped": True}
 
-    raw = await file.read()
     buf = np.frombuffer(raw, dtype=np.uint8)
     frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
     if frame is None:
         raise HTTPException(status_code=400, detail="Could not decode image")
 
     state.device_frame_last_ts[camera_id] = now
-    await dispatch_detections_from_frame(camera_id, cam["name"], frame)
-    return {"status": "ok"}
+    emitted = await dispatch_detections_from_frame(
+        camera_id,
+        cam["name"],
+        frame,
+        confidence_threshold=DEVICE_FRAME_CONFIDENCE,
+    )
+    if emitted == 0:
+        logger.debug(
+            "device-frame processed camera_id=%s shape=%s no boxes above threshold=%s",
+            camera_id,
+            getattr(frame, "shape", None),
+            DEVICE_FRAME_CONFIDENCE,
+        )
+    return {"status": "ok", "detections_emitted": emitted}
 
 
 @app.post("/cameras/{camera_id}/toggle")
